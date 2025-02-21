@@ -4,10 +4,9 @@ import pandas as pd
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, 
                            QVBoxLayout, QWidget, QFileDialog, QHBoxLayout, QSlider,
-                           QScrollArea, QGroupBox, QComboBox)
+                           QScrollArea, QGroupBox, QComboBox, QLineEdit)
 from PyQt5.QtCore import Qt, QPoint, QSize
 from PyQt5.QtGui import QImage, QPixmap, QCursor
-
 
 class PoseEditor(QMainWindow):
     def __init__(self):
@@ -28,19 +27,10 @@ class PoseEditor(QMainWindow):
         self.dragging = False
 
         # Add keypoint names (default, to be updated based on pose data)
-        '''
-        self.keypoint_names = [
-            "nose", "left_eye", "right_eye", "left_ear", "right_ear",
-            "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
-            "left_wrist", "right_wrist", "left_hip", "right_hip",
-            "left_knee", "right_knee", "left_ankle", "right_ankle"
-        ]
-        '''
         self.keypoint_names = []
 
         self.initUI()
     
-
     def initUI(self):
         # Create main container with horizontal layout
         main_widget = QWidget()
@@ -106,6 +96,7 @@ class PoseEditor(QMainWindow):
     
         # Create zoom controls group box
         self.zoom_group_box = QGroupBox("Zoom Controls")
+        self.zoom_group_box.setFixedHeight(100)  # Set fixed height for the zoom controls box
         self.zoom_controls = QVBoxLayout()  # Change to vertical layout
         self.zoom_buttons_layout = QHBoxLayout()  # Horizontal layout for buttons
         self.zoom_out_button = QPushButton("-")
@@ -132,6 +123,21 @@ class PoseEditor(QMainWindow):
         self.keypoint_group_box.setLayout(self.keypoint_layout)
         right_layout.addWidget(self.keypoint_group_box)
     
+        # Create keypoint coordinates group box
+        self.coordinates_group_box = QGroupBox("Keypoint Coordinates")
+        self.coordinates_layout = QVBoxLayout()
+        self.x_coord_input = QLineEdit()
+        self.x_coord_input.setPlaceholderText("X Coordinate")
+        self.y_coord_input = QLineEdit()
+        self.y_coord_input.setPlaceholderText("Y Coordinate")
+        self.confirm_button = QPushButton("Confirm")
+        self.confirm_button.clicked.connect(self.update_keypoint_coordinates)
+        self.coordinates_layout.addWidget(self.x_coord_input)
+        self.coordinates_layout.addWidget(self.y_coord_input)
+        self.coordinates_layout.addWidget(self.confirm_button)
+        self.coordinates_group_box.setLayout(self.coordinates_layout)
+        right_layout.addWidget(self.coordinates_group_box)
+    
         # Create info panel
         self.info_label = QLabel()
         self.info_label.setStyleSheet("QLabel { background-color : #f0f0f0; padding: 10px; }")
@@ -149,7 +155,30 @@ class PoseEditor(QMainWindow):
 
     def on_keypoint_selected(self, index):
         self.selected_point = index
+        self.update_coordinate_inputs()
         self.display_frame()
+
+    def update_coordinate_inputs(self):
+        if self.selected_point is not None and self.current_pose is not None:
+            point = self.current_pose[self.selected_point]
+            self.x_coord_input.setText(str(int(point[0])))
+            self.y_coord_input.setText(str(int(point[1])))
+        else:
+            self.x_coord_input.clear()
+            self.y_coord_input.clear()
+
+    def update_keypoint_coordinates(self):
+        if self.selected_point is not None and self.pose_data is not None:
+            try:
+                x = int(self.x_coord_input.text())
+                y = int(self.y_coord_input.text())
+                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2] = x
+                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1] = y
+                self.current_pose[self.selected_point] = [x, y]  # Update current_pose
+                self.display_frame()
+                self.update_coordinate_inputs()
+            except ValueError:
+                pass  # Ignore invalid input
 
     def load_pose(self):
         pose_path, _ = QFileDialog.getOpenFileName(self, "Open Pose CSV")
@@ -321,6 +350,7 @@ class PoseEditor(QMainWindow):
             if self.selected_point is not None:
                 self.dragging = True
                 self.display_frame()
+                self.update_coordinate_inputs()
         elif event.button() == Qt.RightButton:
             self.selected_point = None
             self.dragging = False
@@ -338,6 +368,7 @@ class PoseEditor(QMainWindow):
                               int(pos.y() / self.zoom_level))
             self.move_point(scaled_pos)
             self.display_frame()
+            self.update_coordinate_inputs()
 
     def get_selected_point(self, pos):
         if self.current_pose is not None:
@@ -356,6 +387,7 @@ class PoseEditor(QMainWindow):
                               self.selected_point * 2] = pos.x()
             self.pose_data.iloc[self.current_frame_idx, 
                               self.selected_point * 2 + 1] = pos.y()
+            self.current_pose[self.selected_point] = [pos.x(), pos.y()]  # Update current_pose
 
     def save_pose(self):
         if self.pose_data is not None:
@@ -383,6 +415,9 @@ class PoseEditor(QMainWindow):
             self.frame_slider.setValue(self.current_frame_idx)
 
 if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = PoseEditor()
+    sys.exit(app.exec_())
     app = QApplication(sys.argv)
     window = PoseEditor()
     sys.exit(app.exec_())
