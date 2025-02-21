@@ -13,3 +13,4 @@ build/
 *.mp4
 *.avi
 test_data/
+.vscode/
