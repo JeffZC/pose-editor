@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+dist/
+build/
+*.spec
+.DS_Store
+.idea/
+*.mp4
+*.avi
+test_data/
