@@ -1,6 +1,6 @@
 # Pose Editor
 
-A PyQt5-based application for editing and annotating pose data from videos.
+A PyQt5-based application for editing huamn pose data with videos.
 
 ## Features
 - Load and display video files
