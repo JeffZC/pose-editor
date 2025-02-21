@@ -1,13 +1,12 @@
-
 import sys
 import cv2
 import pandas as pd
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, 
                            QVBoxLayout, QWidget, QFileDialog, QHBoxLayout, QSlider,
-                           QScrollArea)
+                           QScrollArea, QGroupBox, QComboBox)
 from PyQt5.QtCore import Qt, QPoint, QSize
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QCursor
+from PyQt5.QtGui import QImage, QPixmap, QCursor
 
 
 class PoseEditor(QMainWindow):
@@ -29,43 +28,29 @@ class PoseEditor(QMainWindow):
         self.dragging = False
 
         # Add keypoint names (default, to be updated based on pose data)
+        '''
         self.keypoint_names = [
             "nose", "left_eye", "right_eye", "left_ear", "right_ear",
             "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
             "left_wrist", "right_wrist", "left_hip", "right_hip",
             "left_knee", "right_knee", "left_ankle", "right_ankle"
         ]
+        '''
+        self.keypoint_names = []
 
         self.initUI()
+    
 
     def initUI(self):
         # Create main container with horizontal layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
-
+    
         # Create left panel for video and controls
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-
-        # Create scroll area for video
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-
-        # Create video container and label
-        self.video_container = QWidget()
-        self.video_layout = QVBoxLayout(self.video_container)
-        self.label = QLabel()
-        self.label.setAlignment(Qt.AlignCenter)
-        self.label.setMinimumSize(400, 300)
-        self.video_layout.addWidget(self.label)
-
-        # Add video container to scroll area
-        self.scroll_area.setWidget(self.video_container)
-        left_layout.addWidget(self.scroll_area)
-
+    
         # Create file controls
         self.file_controls = QHBoxLayout()
         self.load_video_button = QPushButton("Load Video")
@@ -74,12 +59,30 @@ class PoseEditor(QMainWindow):
         self.load_pose_button.clicked.connect(self.load_pose)
         self.save_button = QPushButton("Save Poses")
         self.save_button.clicked.connect(self.save_pose)
-
+    
         self.file_controls.addWidget(self.load_video_button)
         self.file_controls.addWidget(self.load_pose_button)
         self.file_controls.addWidget(self.save_button)
         left_layout.addLayout(self.file_controls)
-
+    
+        # Create scroll area for video
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    
+        # Create video container and label
+        self.video_container = QWidget()
+        self.video_layout = QVBoxLayout(self.video_container)
+        self.label = QLabel()
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setMinimumSize(400, 300)
+        self.video_layout.addWidget(self.label)
+    
+        # Add video container to scroll area
+        self.scroll_area.setWidget(self.video_container)
+        left_layout.addWidget(self.scroll_area)
+    
         # Create navigation controls
         self.nav_controls = QHBoxLayout()
         self.prev_frame_button = QPushButton("←")
@@ -90,40 +93,63 @@ class PoseEditor(QMainWindow):
         self.next_frame_button = QPushButton("→")
         self.next_frame_button.clicked.connect(self.next_frame)
         self.frame_counter = QLabel("Frame: 0/0")
-
+    
         self.nav_controls.addWidget(self.prev_frame_button)
         self.nav_controls.addWidget(self.frame_slider)
         self.nav_controls.addWidget(self.next_frame_button)
         self.nav_controls.addWidget(self.frame_counter)
         left_layout.addLayout(self.nav_controls)
-
-        # Create zoom controls
-        self.zoom_controls = QHBoxLayout()
+    
+        # Create right panel for zoom controls and info label
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+    
+        # Create zoom controls group box
+        self.zoom_group_box = QGroupBox("Zoom Controls")
+        self.zoom_controls = QVBoxLayout()  # Change to vertical layout
+        self.zoom_buttons_layout = QHBoxLayout()  # Horizontal layout for buttons
         self.zoom_out_button = QPushButton("-")
         self.zoom_out_button.clicked.connect(self.zoom_out)
         self.zoom_in_button = QPushButton("+")
         self.zoom_in_button.clicked.connect(self.zoom_in)
         self.zoom_label = QLabel("Zoom: 100%")
-
-        self.zoom_controls.addWidget(self.zoom_out_button)
-        self.zoom_controls.addWidget(self.zoom_in_button)
+    
+        self.zoom_buttons_layout.addWidget(self.zoom_out_button)
+        self.zoom_buttons_layout.addWidget(self.zoom_in_button)
+        self.zoom_controls.addLayout(self.zoom_buttons_layout)
         self.zoom_controls.addWidget(self.zoom_label)
         self.zoom_controls.addStretch()
-        left_layout.addLayout(self.zoom_controls)
-
+        self.zoom_group_box.setLayout(self.zoom_controls)
+        right_layout.addWidget(self.zoom_group_box)
+    
+        # Create keypoint selection group box
+        self.keypoint_group_box = QGroupBox("Select Keypoint")
+        self.keypoint_layout = QVBoxLayout()
+        self.keypoint_dropdown = QComboBox()
+        self.keypoint_dropdown.addItems(self.keypoint_names)
+        self.keypoint_dropdown.currentIndexChanged.connect(self.on_keypoint_selected)
+        self.keypoint_layout.addWidget(self.keypoint_dropdown)
+        self.keypoint_group_box.setLayout(self.keypoint_layout)
+        right_layout.addWidget(self.keypoint_group_box)
+    
         # Create info panel
         self.info_label = QLabel()
         self.info_label.setStyleSheet("QLabel { background-color : #f0f0f0; padding: 10px; }")
         self.info_label.setMinimumWidth(200)
         self.info_label.setAlignment(Qt.AlignTop)
         self.info_label.setText("No point selected")
-
+        right_layout.addWidget(self.info_label)
+    
         # Add panels to main layout
         main_layout.addWidget(left_panel, stretch=4)
-        main_layout.addWidget(self.info_label, stretch=1)
-
+        main_layout.addWidget(right_panel, stretch=1)
+    
         self.setMinimumSize(800, 600)
         self.show()
+
+    def on_keypoint_selected(self, index):
+        self.selected_point = index
+        self.display_frame()
 
     def load_pose(self):
         pose_path, _ = QFileDialog.getOpenFileName(self, "Open Pose CSV")
@@ -136,12 +162,26 @@ class PoseEditor(QMainWindow):
             columns = self.pose_data.columns
             self.keypoint_names = [col[:-2] for col in columns[::2]]  # Remove _x suffix
             
+            # Update keypoint dropdown with new keypoint names
+            self.keypoint_dropdown.clear()
+            self.keypoint_dropdown.addItems(self.keypoint_names)
+            
             # Update info label with new keypoint names
             if self.selected_point is not None and self.selected_point < len(self.keypoint_names):
                 self.update_info_label()
             
             if hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
                 self.update_frame()
+    
+    def update_info_label(self):
+        if self.selected_point is not None and self.selected_point < len(self.keypoint_names):
+            point = self.current_pose[self.selected_point]
+            info_text = f"Selected Point:\n\n"
+            info_text += f"Name: {self.keypoint_names[self.selected_point]}\n"
+            info_text += f"Position: ({int(point[0])}, {int(point[1])})"
+            self.info_label.setText(info_text)
+        else:
+            self.info_label.setText("No point selected")
 
     def update_frame(self):
         if self.cap:
@@ -196,14 +236,7 @@ class PoseEditor(QMainWindow):
                     cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
 
             # Update info label with selected point info
-            if self.selected_point is not None and self.selected_point < len(self.keypoint_names):
-                point = self.current_pose[self.selected_point]
-                info_text = f"Selected Point:\n\n"
-                info_text += f"Name: {self.keypoint_names[self.selected_point]}\n"
-                info_text += f"Position: ({int(point[0])}, {int(point[1])})"
-                self.info_label.setText(info_text)
-            else:
-                self.info_label.setText("No point selected")
+            self.update_info_label()
             
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             height, width, channel = frame_rgb.shape
