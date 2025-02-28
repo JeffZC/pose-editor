@@ -1,14 +1,26 @@
-# Pose Editor
+# Pose Editor: An Intuitive Tool for Human Pose Annotation
 
-A PyQt5-based application for editing huamn pose data with videos.
+Pose Editor is a user-friendly application for editing and annotating human pose data in videos. This versatile tool allows researchers, animators, and motion analysts to precisely mark and adjust key points on the human body throughout video sequences.
 
-## Features
-- Load and display video files
-- Load and edit pose data from CSV files
-- Interactive point selection and editing
-- Zoom and pan functionality
-- Frame-by-frame navigation
-- Save modified pose data
+## Key Features
+
+- **Easy Video Navigation**: Browse through video frames with intuitive playback controls
+- **Interactive Pose Editing**: Click and drag keypoints directly on the video frame
+- **Black and White Toggle**: Switch between color and grayscale modes for better visibility
+- **Precise Coordinate Control**: Manually enter exact coordinates for perfect positioning
+- **Dynamic Zoom**: Zoom in for detailed edits and zoom out for full context
+- **Synchronized Interface**: All controls stay in sync - clicking points updates the dropdown menu and coordinate displays automatically
+- **Simple File Management**: Load videos, import existing pose data, and save your edited work with ease
+
+## Perfect For
+
+- Motion analysis researchers
+- Animation reference creation
+- Physical therapy assessment
+- Sports performance analysis
+- Computer vision dataset preparation
+
+This application bridges the gap between raw video footage and precise human pose data, allowing for efficient annotation and correction without requiring technical expertise in computer vision or programming.
 
 ## Requirements
 ```bash
