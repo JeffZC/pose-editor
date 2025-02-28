@@ -4,12 +4,12 @@ Pose Editor is a user-friendly application for editing and refining human pose k
 
 ## Key Features
 
-- **Easy Video Navigation**: Browse through video frames with intuitive playback controls
-- **Interactive Pose Editing**: Click and drag keypoints directly on the video frame
-- **Black and White Toggle**: Switch between color and grayscale modes for better visibility
-- **Precise Coordinate Control**: Manually enter exact coordinates for perfect positioning
-- **Dynamic Zoom**: Zoom in for detailed edits and zoom out for full context
-- **Simple File Management**: Load videos, import existing pose data, and save your edited work with ease
+- **Easy Video Navigation**: Browse through video frames with intuitive playback controls.
+- **Interactive Pose Editing**: Click and drag keypoints directly on the video frame.
+- **Black and White Toggle**: Switch between color and grayscale modes for better visibility.
+- **Precise Coordinate Control**: Manually enter exact coordinates for perfect positioning.
+- **Dynamic Zoom**: Zoom in for detailed edits and zoom out for full context.
+- **Simple File Management**: Load videos, import existing pose data, and save your edited work with ease.
 
 ## Perfect For
 
@@ -26,6 +26,7 @@ PyQt5>=5.15.0
 opencv-python>=4.5.0
 pandas>=1.3.0
 numpy>=1.19.0
+```
 
 ## Installation
 
@@ -48,8 +49,9 @@ python pose_annotator.py
 ```
 
 ## Controls
-- Left click to select points
-- Drag to move selected points
-- Right click to deselect points
-- Use +/- buttons to zoom in/out
-- Use arrow buttons or slider for frame navigation
+
+- Left click to select points.
+- Drag to move selected points.
+- Right click to deselect points.
+- Use +/- buttons to zoom in/out.
+- Use arrow buttons or slider for frame navigation.
