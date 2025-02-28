@@ -25,6 +25,7 @@ class PoseEditor(QMainWindow):
         self.max_zoom_level = 5.0
         self.zoom_center = QPoint(0, 0)
         self.dragging = False
+        self.black_and_white = False  # Initialize black and white mode
 
         # Add keypoint names (default, to be updated based on pose data)
         self.keypoint_names = []
@@ -66,6 +67,7 @@ class PoseEditor(QMainWindow):
         self.video_layout = QVBoxLayout(self.video_container)
         self.label = QLabel()
         self.label.setAlignment(Qt.AlignCenter)
+        self.label.installEventFilter(self)
         self.label.setMinimumSize(400, 300)
         self.video_layout.addWidget(self.label)
     
@@ -138,6 +140,15 @@ class PoseEditor(QMainWindow):
         self.coordinates_group_box.setLayout(self.coordinates_layout)
         right_layout.addWidget(self.coordinates_group_box)
     
+        # Create black and white switch group box
+        self.bw_group_box = QGroupBox("Black and White Switch")
+        self.bw_layout = QVBoxLayout()
+        self.bw_button = QPushButton("Toggle Black and White")
+        self.bw_button.clicked.connect(self.toggle_black_and_white)
+        self.bw_layout.addWidget(self.bw_button)
+        self.bw_group_box.setLayout(self.bw_layout)
+        right_layout.addWidget(self.bw_group_box)
+    
         # Create info panel
         self.info_label = QLabel()
         self.info_label.setStyleSheet("QLabel { background-color : #f0f0f0; padding: 10px; }")
@@ -153,62 +164,106 @@ class PoseEditor(QMainWindow):
         self.setMinimumSize(800, 600)
         self.show()
 
-    def on_keypoint_selected(self, index):
-        self.selected_point = index
-        self.update_coordinate_inputs()
+    def toggle_black_and_white(self):
+        self.black_and_white = not self.black_and_white
         self.display_frame()
+
+    def display_frame(self):
+        if self.current_frame is not None:
+            frame = self.current_frame.copy()
+            if self.black_and_white:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            if self.pose_data is not None:
+                self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+                for i, point in enumerate(self.current_pose):
+                    radius = 8 if i == self.selected_point else 5
+                    color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
+                    cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+
+            self.update_info_label()
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            height, width, channel = frame_rgb.shape
+            bytes_per_line = 3 * width
+            q_img = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_img)
+
+            scaled_width = int(width * self.zoom_level)
+            scaled_height = int(height * self.zoom_level)
+
+            scaled_pixmap = pixmap.scaled(
+                scaled_width,
+                scaled_height,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+
+            self.label.setPixmap(scaled_pixmap)
+            self.label.setFixedSize(scaled_width, scaled_height)
 
     def update_coordinate_inputs(self):
         if self.selected_point is not None and self.current_pose is not None:
-            point = self.current_pose[self.selected_point]
-            self.x_coord_input.setText(str(int(point[0])))
-            self.y_coord_input.setText(str(int(point[1])))
+            if 0 <= self.selected_point < len(self.current_pose):
+                point = self.current_pose[self.selected_point]
+                self.x_coord_input.setText(str(int(point[0])))
+                self.y_coord_input.setText(str(int(point[1])))
         else:
             self.x_coord_input.clear()
             self.y_coord_input.clear()
-
-    def update_keypoint_coordinates(self):
-        if self.selected_point is not None and self.pose_data is not None:
-            try:
-                x = int(self.x_coord_input.text())
-                y = int(self.y_coord_input.text())
-                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2] = x
-                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1] = y
-                self.current_pose[self.selected_point] = [x, y]  # Update current_pose
-                self.display_frame()
-                self.update_coordinate_inputs()
-            except ValueError:
-                pass  # Ignore invalid input
 
     def load_pose(self):
         pose_path, _ = QFileDialog.getOpenFileName(self, "Open Pose CSV")
         if pose_path:
             try:
+                # Load the pose data
                 self.pose_data = pd.read_csv(pose_path)
-            except Exception as e:
-                self.info_label.setText(f"Error loading pose data: {e}")
-                return
-            columns = self.pose_data.columns
-            self.keypoint_names = [col[:-2] for col in columns[::2]]  # Remove _x suffix
-            
-            # Update keypoint dropdown with new keypoint names
-            self.keypoint_dropdown.clear()
-            self.keypoint_dropdown.addItems(self.keypoint_names)
-            
-            # Update info label with new keypoint names
-            if self.selected_point is not None and self.selected_point < len(self.keypoint_names):
+                
+                # Verify the data format
+                if len(self.pose_data.columns) % 2 != 0:
+                    raise ValueError("Invalid pose data format: Number of columns must be even")
+                    
+                # Update keypoint names safely
+                columns = self.pose_data.columns
+                self.keypoint_names = []
+                for i in range(0, len(columns), 2):
+                    if i+1 < len(columns):
+                        name = columns[i].replace('_x', '')
+                        self.keypoint_names.append(name)
+                
+                # Update keypoint dropdown
+                self.keypoint_dropdown.blockSignals(True)  # Block signals temporarily
+                self.keypoint_dropdown.clear()
+                self.keypoint_dropdown.addItems(self.keypoint_names)
+                self.keypoint_dropdown.blockSignals(False)  # Unblock signals
+                
+                # Reset selection
+                self.selected_point = None
+                
+                # Update display
                 self.update_info_label()
-            
-            if hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
-                self.update_frame()
+                if hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
+                    self.update_frame()
+                    
+                # Show success message
+                self.info_label.setText("Pose data loaded successfully")
+                
+            except Exception as e:
+                self.info_label.setText(f"Error loading pose data: {str(e)}")
+                self.pose_data = None
+                self.keypoint_names = []
+                self.keypoint_dropdown.clear()
     
     def update_info_label(self):
-        if self.selected_point is not None and self.selected_point < len(self.keypoint_names):
+        if self.selected_point is not None and self.selected_point < len(self.keypoint_names) and self.current_pose is not None and self.selected_point < len(self.current_pose):
             point = self.current_pose[self.selected_point]
-            info_text = f"Selected Point:\n\n"
-            info_text += f"Name: {self.keypoint_names[self.selected_point]}\n"
-            info_text += f"Position: ({int(point[0])}, {int(point[1])})"
-            self.info_label.setText(info_text)
+            if not np.isnan(point).any():
+                info_text = f"Selected Point:\n\n"
+                info_text += f"Name: {self.keypoint_names[self.selected_point]}\n"
+                info_text += f"Position: ({int(point[0])}, {int(point[1])})"
+                self.info_label.setText(info_text)
+            else:
+                self.info_label.setText("Invalid coordinates for the selected point")
         else:
             self.info_label.setText("No point selected")
 
@@ -253,40 +308,6 @@ class PoseEditor(QMainWindow):
             
             self.update_frame()
     
-    def display_frame(self):
-        if self.current_frame is not None:
-            frame = self.current_frame.copy()
-            if self.pose_data is not None:
-                self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
-                for i, point in enumerate(self.current_pose):
-                    # Draw larger circles for selected point
-                    radius = 8 if i == self.selected_point else 5
-                    color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
-                    cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
-
-            # Update info label with selected point info
-            self.update_info_label()
-            
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            height, width, channel = frame_rgb.shape
-            bytes_per_line = 3 * width
-            q_img = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(q_img)
-            
-            # Calculate zoom transformation
-            scaled_width = int(width * self.zoom_level)
-            scaled_height = int(height * self.zoom_level)
-            
-            # Create scaled pixmap
-            scaled_pixmap = pixmap.scaled(
-                scaled_width,
-                scaled_height,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
-            
-            self.label.setPixmap(scaled_pixmap)
-            self.label.setFixedSize(scaled_width, scaled_height)
     
     def zoom_in(self):
         if self.zoom_level < self.max_zoom_level:
@@ -338,37 +359,14 @@ class PoseEditor(QMainWindow):
         self.scroll_area.horizontalScrollBar().setValue(new_x)
         self.scroll_area.verticalScrollBar().setValue(new_y)
     
-    
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            # Convert global coordinates to label coordinates
-            pos = self.label.mapFrom(self, event.pos())
-            # Convert coordinates based on zoom level
-            scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
-                              int(pos.y() / self.zoom_level))
-            self.selected_point = self.get_selected_point(scaled_pos)
-            if self.selected_point is not None:
-                self.dragging = True
-                self.display_frame()
-                self.update_coordinate_inputs()
-        elif event.button() == Qt.RightButton:
-            self.selected_point = None
-            self.dragging = False
+    def eventFilter(self, source, event):
+        if event.type() == event.MouseButtonPress and source is self.label:
+            self.mousePressEvent(event)
+        return super().eventFilter(source, event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.dragging = False
-
-    def mouseMoveEvent(self, event):
-        if self.dragging and self.selected_point is not None:
-            # Convert global coordinates to label coordinates
-            pos = self.label.mapFrom(self, event.pos())
-            # Convert coordinates based on zoom level
-            scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
-                              int(pos.y() / self.zoom_level))
-            self.move_point(scaled_pos)
-            self.display_frame()
-            self.update_coordinate_inputs()
 
     def get_selected_point(self, pos):
         if self.current_pose is not None:
@@ -379,15 +377,6 @@ class PoseEditor(QMainWindow):
                                 np.array([pos.x(), pos.y()])) < detect_radius:
                     return i
         return None
-
-    def move_point(self, pos):
-        if self.selected_point is not None and self.pose_data is not None:
-            # Update the pose data directly
-            self.pose_data.iloc[self.current_frame_idx, 
-                              self.selected_point * 2] = pos.x()
-            self.pose_data.iloc[self.current_frame_idx, 
-                              self.selected_point * 2 + 1] = pos.y()
-            self.current_pose[self.selected_point] = [pos.x(), pos.y()]  # Update current_pose
 
     def save_pose(self):
         if self.pose_data is not None:
@@ -405,19 +394,112 @@ class PoseEditor(QMainWindow):
         self.update_frame()
 
     def next_frame(self):
-        if self.cap and self.current_frame_idx < self.frame_slider.maximum():
+        if hasattr(self, 'cap') and self.cap and self.current_frame_idx < self.frame_slider.maximum():
             self.current_frame_idx += 1
             self.frame_slider.setValue(self.current_frame_idx)
 
     def prev_frame(self):
-        if self.cap and self.current_frame_idx > 0:
+        if hasattr(self, 'cap') and self.cap and self.current_frame_idx > 0:
             self.current_frame_idx -= 1
             self.frame_slider.setValue(self.current_frame_idx)
-
+    
+    def on_keypoint_selected(self, index):
+        if 0 <= index < len(self.keypoint_names):
+            self.selected_point = index
+            self.update_coordinate_inputs()
+            self.display_frame()
+        else:
+            self.selected_point = None
+            self.update_coordinate_inputs()
+            self.display_frame()
+    
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        if event.button() == Qt.LeftButton:
+            # Convert global coordinates to label coordinates
+            pos = self.label.mapFromGlobal(event.globalPos())
+            # Convert coordinates based on zoom level
+            scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
+                              int(pos.y() / self.zoom_level))
+            new_selected_point = self.get_selected_point(scaled_pos)
+            if new_selected_point is not None:
+                self.selected_point = new_selected_point
+                # Synchronize dropdown selection with clicked point
+                self.keypoint_dropdown.blockSignals(True)  # Block signals temporarily
+                self.keypoint_dropdown.setCurrentIndex(self.selected_point)
+                self.keypoint_dropdown.blockSignals(False)  # Unblock signals
+                self.dragging = True
+                self.display_frame()
+                self.update_coordinate_inputs()
+        elif event.button() == Qt.RightButton:
+            self.selected_point = None
+            self.dragging = False
+            # Reset dropdown selection
+            self.keypoint_dropdown.blockSignals(True)
+            self.keypoint_dropdown.setCurrentIndex(-1)
+            self.keypoint_dropdown.blockSignals(False)
+            self.update_coordinate_inputs()
+            self.display_frame()
+    
+    def mouseMoveEvent(self, event):
+        if self.dragging and self.selected_point is not None:
+            # Convert global coordinates to label coordinates
+            pos = self.label.mapFrom(self, event.pos())
+            # Convert coordinates based on zoom level
+            scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
+                              int(pos.y() / self.zoom_level))
+            self.move_point(scaled_pos)
+            self.display_frame()
+            self.update_coordinate_inputs()
+    
+    def move_point(self, pos):
+        if self.selected_point is not None and self.pose_data is not None:
+            # Update the pose data directly
+            x, y = pos.x(), pos.y()
+            
+            # Validate coordinates aren't outside the image bounds
+            if x < 0 or y < 0:
+                return
+                
+            self.pose_data.iloc[self.current_frame_idx, 
+                              self.selected_point * 2] = x
+            self.pose_data.iloc[self.current_frame_idx, 
+                              self.selected_point * 2 + 1] = y
+            self.current_pose[self.selected_point] = [x, y]  # Update current_pose
+            
+            # Update coordinate inputs to reflect the new position
+            self.x_coord_input.setText(str(int(x)))
+            self.y_coord_input.setText(str(int(y)))
+    
+    def update_keypoint_coordinates(self):
+        if self.selected_point is not None and self.pose_data is not None:
+            try:
+                x = int(self.x_coord_input.text())
+                y = int(self.y_coord_input.text())
+            except ValueError:
+                self.info_label.setText("Invalid input: Coordinates must be integers")
+                return
+            
+            # Validate coordinates
+            if x < 0 or y < 0:
+                self.info_label.setText("Invalid input: Coordinates must be positive")
+                return
+            
+            # Update the pose data
+            self.pose_data.iloc[self.current_frame_idx, 
+                              self.selected_point * 2] = x
+            self.pose_data.iloc[self.current_frame_idx, 
+                              self.selected_point * 2 + 1] = y
+            
+            # Update current_pose to reflect the changes
+            if self.current_pose is not None and self.selected_point < len(self.current_pose):
+                self.current_pose[self.selected_point] = [x, y]
+                
+            # Display the updated frame
+            self.display_frame()
+            self.update_info_label()
+            
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = PoseEditor()
-    sys.exit(app.exec_())
     app = QApplication(sys.argv)
     window = PoseEditor()
     sys.exit(app.exec_())
