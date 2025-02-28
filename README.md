@@ -14,7 +14,6 @@ Pose Editor is a user-friendly application for editing and refining human pose k
 ## Perfect For
 
 - Motion analysis researchers
-- Animation reference creation
 - Physical therapy assessment
 - Sports performance analysis
 - Computer vision dataset preparation
