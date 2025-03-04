@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton,
                            QScrollArea, QGroupBox, QComboBox, QLineEdit)
 from PyQt5.QtCore import Qt, QPoint, QSize
 from PyQt5.QtGui import QImage, QPixmap, QCursor
+from plot_utils import create_plot_widget
 
 class PoseEditor(QMainWindow):
     def __init__(self):
@@ -74,6 +75,10 @@ class PoseEditor(QMainWindow):
         # Add video container to scroll area
         self.scroll_area.setWidget(self.video_container)
         left_layout.addWidget(self.scroll_area)
+    
+        # Add plot widget
+        self.plot_widget, self.keypoint_plot = create_plot_widget()
+        left_layout.addWidget(self.plot_widget)
     
         # Create navigation controls
         self.nav_controls = QHBoxLayout()
@@ -268,15 +273,19 @@ class PoseEditor(QMainWindow):
             self.info_label.setText("No point selected")
 
     def update_frame(self):
-        if self.cap:
+        if hasattr(self, 'cap') and self.cap:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
             ret, frame = self.cap.read()
             if ret:
                 self.current_frame = frame
                 self.frame_counter.setText(f"Frame: {self.current_frame_idx}/{self.frame_slider.maximum()}")
+                
+                # Update the display now that we have a new frame
+                self.display_frame()
+                self.update_coordinate_inputs()
+                self.update_plot()
             else:
                 self.frame_counter.setText(f"Frame: {self.current_frame_idx}/{self.frame_slider.maximum()}")
-            self.display_frame()
 
     def load_video(self):
         if hasattr(self, 'cap') and self.cap is not None:
@@ -360,8 +369,54 @@ class PoseEditor(QMainWindow):
         self.scroll_area.verticalScrollBar().setValue(new_y)
     
     def eventFilter(self, source, event):
-        if event.type() == event.MouseButtonPress and source is self.label:
-            self.mousePressEvent(event)
+        if source is self.label:
+            if event.type() == event.MouseButtonPress:
+                # Get the position within the label
+                pos = event.pos()
+                # Convert to scaled position
+                scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
+                                   int(pos.y() / self.zoom_level))
+                new_selected_point = self.get_selected_point(scaled_pos)
+                
+                if event.button() == Qt.LeftButton:
+                    if new_selected_point is not None:
+                        self.selected_point = new_selected_point
+                        # Synchronize dropdown
+                        self.keypoint_dropdown.blockSignals(True)
+                        self.keypoint_dropdown.setCurrentIndex(self.selected_point)
+                        self.keypoint_dropdown.blockSignals(False)
+                        self.dragging = True
+                        self.update_coordinate_inputs()
+                        self.update_plot()
+                        self.display_frame()
+                        return True
+                elif event.button() == Qt.RightButton:
+                    self.selected_point = None
+                    self.dragging = False
+                    # Reset dropdown
+                    self.keypoint_dropdown.blockSignals(True)
+                    self.keypoint_dropdown.setCurrentIndex(-1)
+                    self.keypoint_dropdown.blockSignals(False)
+                    self.update_coordinate_inputs()
+                    self.update_plot()
+                    self.display_frame()
+                    return True
+                    
+            elif event.type() == event.MouseMove and self.dragging and self.selected_point is not None:
+                pos = event.pos()
+                scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
+                                   int(pos.y() / self.zoom_level))
+                self.move_point(scaled_pos)
+                self.update_coordinate_inputs()
+                self.update_plot()
+                self.display_frame()
+                return True
+                
+            elif event.type() == event.MouseButtonRelease:
+                if event.button() == Qt.LeftButton:
+                    self.dragging = False
+                    return True
+        
         return super().eventFilter(source, event)
 
     def mouseReleaseEvent(self, event):
@@ -392,32 +447,44 @@ class PoseEditor(QMainWindow):
     def on_frame_change(self, value):
         self.current_frame_idx = value
         self.update_frame()
+        # update_frame now calls update_coordinate_inputs
+        self.update_plot()
 
     def next_frame(self):
         if hasattr(self, 'cap') and self.cap and self.current_frame_idx < self.frame_slider.maximum():
             self.current_frame_idx += 1
             self.frame_slider.setValue(self.current_frame_idx)
+            # Force an update if setValue doesn't trigger the callback
+            self.update_frame()
+            self.update_coordinate_inputs()
+            self.update_plot()
 
     def prev_frame(self):
         if hasattr(self, 'cap') and self.cap and self.current_frame_idx > 0:
             self.current_frame_idx -= 1
             self.frame_slider.setValue(self.current_frame_idx)
+            # Force an update if setValue doesn't trigger the callback
+            self.update_frame()
+            self.update_coordinate_inputs()
+            self.update_plot()
     
     def on_keypoint_selected(self, index):
         if 0 <= index < len(self.keypoint_names):
             self.selected_point = index
             self.update_coordinate_inputs()
+            self.update_plot()  # Add this line
             self.display_frame()
         else:
             self.selected_point = None
             self.update_coordinate_inputs()
+            self.update_plot()  # Add this line
             self.display_frame()
     
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
         if event.button() == Qt.LeftButton:
             # Convert global coordinates to label coordinates
-            pos = self.label.mapFromGlobal(event.globalPos())
+            pos = self.label.mapFromGlobal(QCursor.pos())  # Changed from event.globalPos()
             # Convert coordinates based on zoom level
             scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
                               int(pos.y() / self.zoom_level))
@@ -431,6 +498,7 @@ class PoseEditor(QMainWindow):
                 self.dragging = True
                 self.display_frame()
                 self.update_coordinate_inputs()
+                self.update_plot()  # Add this line
         elif event.button() == Qt.RightButton:
             self.selected_point = None
             self.dragging = False
@@ -440,18 +508,8 @@ class PoseEditor(QMainWindow):
             self.keypoint_dropdown.blockSignals(False)
             self.update_coordinate_inputs()
             self.display_frame()
-    
-    def mouseMoveEvent(self, event):
-        if self.dragging and self.selected_point is not None:
-            # Convert global coordinates to label coordinates
-            pos = self.label.mapFrom(self, event.pos())
-            # Convert coordinates based on zoom level
-            scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
-                              int(pos.y() / self.zoom_level))
-            self.move_point(scaled_pos)
-            self.display_frame()
-            self.update_coordinate_inputs()
-    
+            self.update_plot()  # Add this line
+
     def move_point(self, pos):
         if self.selected_point is not None and self.pose_data is not None:
             # Update the pose data directly
@@ -499,6 +557,30 @@ class PoseEditor(QMainWindow):
             self.display_frame()
             self.update_info_label()
             
+    def update_plot(self):
+        if hasattr(self, 'keypoint_plot') and self.pose_data is not None and self.selected_point is not None:
+            total_frames = len(self.pose_data)
+            self.keypoint_plot.plot_keypoint_trajectory(
+                self.pose_data, 
+                self.selected_point, 
+                self.current_frame_idx, 
+                total_frames
+            )
+        elif hasattr(self, 'keypoint_plot'):
+            self.keypoint_plot.clear_plot()
+    
+    def mouseMoveEvent(self, event):
+        if self.dragging and self.selected_point is not None:
+            # Convert global coordinates to label coordinates
+            pos = self.label.mapFrom(self, event.pos())
+            # Convert coordinates based on zoom level
+            scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
+                              int(pos.y() / self.zoom_level))
+            self.move_point(scaled_pos)
+            self.display_frame()
+            self.update_coordinate_inputs()  # Make sure this is always called when moving points
+            self.update_plot()  # Also update the plot when dragging
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = PoseEditor()
