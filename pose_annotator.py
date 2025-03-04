@@ -175,6 +175,7 @@ class PoseEditor(QMainWindow):
 
     def display_frame(self):
         if self.current_frame is not None:
+            # Only do the minimum needed for visual feedback
             frame = self.current_frame.copy()
             if self.black_and_white:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -186,7 +187,9 @@ class PoseEditor(QMainWindow):
                     color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
                     cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
 
-            self.update_info_label()
+            # Only update info label if not dragging
+            if not self.dragging:
+                self.update_info_label()
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             height, width, channel = frame_rgb.shape
@@ -387,8 +390,8 @@ class PoseEditor(QMainWindow):
                         self.keypoint_dropdown.blockSignals(False)
                         self.dragging = True
                         self.update_coordinate_inputs()
-                        self.update_plot()
                         self.display_frame()
+                        self.update_plot()  # Update plot after visual updates
                         return True
                 elif event.button() == Qt.RightButton:
                     self.selected_point = None
@@ -398,23 +401,26 @@ class PoseEditor(QMainWindow):
                     self.keypoint_dropdown.setCurrentIndex(-1)
                     self.keypoint_dropdown.blockSignals(False)
                     self.update_coordinate_inputs()
-                    self.update_plot()
                     self.display_frame()
+                    self.update_plot()  # Update plot after visual updates
                     return True
                     
             elif event.type() == event.MouseMove and self.dragging and self.selected_point is not None:
                 pos = event.pos()
                 scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
                                    int(pos.y() / self.zoom_level))
+                # Update data and visuals only, skip plot update during drag
                 self.move_point(scaled_pos)
                 self.update_coordinate_inputs()
-                self.update_plot()
                 self.display_frame()
+                # Skip plot update during dragging for better performance
                 return True
                 
             elif event.type() == event.MouseButtonRelease:
-                if event.button() == Qt.LeftButton:
+                if event.button() == Qt.LeftButton and self.dragging:
                     self.dragging = False
+                    # Update plot only when the drag is complete
+                    self.update_plot()
                     return True
         
         return super().eventFilter(source, event)
@@ -482,33 +488,8 @@ class PoseEditor(QMainWindow):
     
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
-        if event.button() == Qt.LeftButton:
-            # Convert global coordinates to label coordinates
-            pos = self.label.mapFromGlobal(QCursor.pos())  # Changed from event.globalPos()
-            # Convert coordinates based on zoom level
-            scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
-                              int(pos.y() / self.zoom_level))
-            new_selected_point = self.get_selected_point(scaled_pos)
-            if new_selected_point is not None:
-                self.selected_point = new_selected_point
-                # Synchronize dropdown selection with clicked point
-                self.keypoint_dropdown.blockSignals(True)  # Block signals temporarily
-                self.keypoint_dropdown.setCurrentIndex(self.selected_point)
-                self.keypoint_dropdown.blockSignals(False)  # Unblock signals
-                self.dragging = True
-                self.display_frame()
-                self.update_coordinate_inputs()
-                self.update_plot()  # Add this line
-        elif event.button() == Qt.RightButton:
-            self.selected_point = None
-            self.dragging = False
-            # Reset dropdown selection
-            self.keypoint_dropdown.blockSignals(True)
-            self.keypoint_dropdown.setCurrentIndex(-1)
-            self.keypoint_dropdown.blockSignals(False)
-            self.update_coordinate_inputs()
-            self.display_frame()
-            self.update_plot()  # Add this line
+        # Note: We'll handle this in the eventFilter instead to avoid duplicate handling
+        pass
 
     def move_point(self, pos):
         if self.selected_point is not None and self.pose_data is not None:
@@ -519,6 +500,7 @@ class PoseEditor(QMainWindow):
             if x < 0 or y < 0:
                 return
                 
+            # Update data first
             self.pose_data.iloc[self.current_frame_idx, 
                               self.selected_point * 2] = x
             self.pose_data.iloc[self.current_frame_idx, 
@@ -570,16 +552,8 @@ class PoseEditor(QMainWindow):
             self.keypoint_plot.clear_plot()
     
     def mouseMoveEvent(self, event):
-        if self.dragging and self.selected_point is not None:
-            # Convert global coordinates to label coordinates
-            pos = self.label.mapFrom(self, event.pos())
-            # Convert coordinates based on zoom level
-            scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
-                              int(pos.y() / self.zoom_level))
-            self.move_point(scaled_pos)
-            self.display_frame()
-            self.update_coordinate_inputs()  # Make sure this is always called when moving points
-            self.update_plot()  # Also update the plot when dragging
+        # Note: We'll handle this in the eventFilter instead to avoid duplicate handling
+        pass
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
