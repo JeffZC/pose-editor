@@ -97,7 +97,7 @@ class PoseEditor(QMainWindow):
         self.nav_controls.addWidget(self.frame_counter)
         left_layout.addLayout(self.nav_controls)
     
-        # Create right panel for zoom controls and info label
+        # Create right panel for zoom controls
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
     
@@ -153,15 +153,7 @@ class PoseEditor(QMainWindow):
         self.bw_layout.addWidget(self.bw_button)
         self.bw_group_box.setLayout(self.bw_layout)
         right_layout.addWidget(self.bw_group_box)
-    
-        # Create info panel
-        self.info_label = QLabel()
-        self.info_label.setStyleSheet("QLabel { background-color : #f0f0f0; padding: 10px; }")
-        self.info_label.setMinimumWidth(200)
-        self.info_label.setAlignment(Qt.AlignTop)
-        self.info_label.setText("No point selected")
-        right_layout.addWidget(self.info_label)
-    
+        
         # Add panels to main layout
         main_layout.addWidget(left_panel, stretch=4)
         main_layout.addWidget(right_panel, stretch=1)
@@ -186,10 +178,6 @@ class PoseEditor(QMainWindow):
                     radius = 8 if i == self.selected_point else 5
                     color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
                     cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
-
-            # Only update info label if not dragging
-            if not self.dragging:
-                self.update_info_label()
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             height, width, channel = frame_rgb.shape
@@ -249,31 +237,13 @@ class PoseEditor(QMainWindow):
                 self.selected_point = None
                 
                 # Update display
-                self.update_info_label()
                 if hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
                     self.update_frame()
-                    
-                # Show success message
-                self.info_label.setText("Pose data loaded successfully")
-                
+
             except Exception as e:
-                self.info_label.setText(f"Error loading pose data: {str(e)}")
                 self.pose_data = None
                 self.keypoint_names = []
                 self.keypoint_dropdown.clear()
-    
-    def update_info_label(self):
-        if self.selected_point is not None and self.selected_point < len(self.keypoint_names) and self.current_pose is not None and self.selected_point < len(self.current_pose):
-            point = self.current_pose[self.selected_point]
-            if not np.isnan(point).any():
-                info_text = f"Selected Point:\n\n"
-                info_text += f"Name: {self.keypoint_names[self.selected_point]}\n"
-                info_text += f"Position: ({int(point[0])}, {int(point[1])})"
-                self.info_label.setText(info_text)
-            else:
-                self.info_label.setText("Invalid coordinates for the selected point")
-        else:
-            self.info_label.setText("No point selected")
 
     def update_frame(self):
         if hasattr(self, 'cap') and self.cap:
@@ -296,16 +266,12 @@ class PoseEditor(QMainWindow):
         self.video_path, _ = QFileDialog.getOpenFileName(self, "Open Video")
         if self.video_path:
             self.cap = cv2.VideoCapture(self.video_path)
-            if not self.cap.isOpened():
-                self.info_label.setText("Error: Unable to open video file.")
-                return
             total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
             self.frame_slider.setMaximum(total_frames - 1)
             self.current_frame_idx = 0
             width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             if width <= 0 or height <= 0:
-                self.info_label.setText("Error: Invalid video dimensions.")
                 self.cap.release()
                 self.cap = None
                 return
@@ -517,12 +483,10 @@ class PoseEditor(QMainWindow):
                 x = int(self.x_coord_input.text())
                 y = int(self.y_coord_input.text())
             except ValueError:
-                self.info_label.setText("Invalid input: Coordinates must be integers")
                 return
             
             # Validate coordinates
             if x < 0 or y < 0:
-                self.info_label.setText("Invalid input: Coordinates must be positive")
                 return
             
             # Update the pose data
@@ -537,7 +501,6 @@ class PoseEditor(QMainWindow):
                 
             # Display the updated frame
             self.display_frame()
-            self.update_info_label()
             
     def update_plot(self):
         if hasattr(self, 'keypoint_plot') and self.pose_data is not None and self.selected_point is not None:
