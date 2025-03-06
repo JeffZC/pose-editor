@@ -2,11 +2,12 @@ import sys
 import cv2
 import pandas as pd
 import numpy as np
+import time
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, 
                            QVBoxLayout, QWidget, QFileDialog, QHBoxLayout, QSlider,
                            QScrollArea, QGroupBox, QComboBox, QLineEdit)
-from PyQt5.QtCore import Qt, QPoint, QSize
-from PyQt5.QtGui import QImage, QPixmap, QCursor
+from PyQt5.QtCore import Qt, QPoint, QSize, QTimer
+from PyQt5.QtGui import QImage, QPixmap, QCursor, QIcon
 from plot_utils import create_plot_widget
 
 class PoseEditor(QMainWindow):
@@ -27,6 +28,10 @@ class PoseEditor(QMainWindow):
         self.zoom_center = QPoint(0, 0)
         self.dragging = False
         self.black_and_white = False  # Initialize black and white mode
+        self.playing = False
+        self.play_speed = 30  # frames per second
+        self.play_timer = QTimer()
+        self.play_timer.timeout.connect(self.advance_frame)
 
         # Add keypoint names (default, to be updated based on pose data)
         self.keypoint_names = []
@@ -80,17 +85,29 @@ class PoseEditor(QMainWindow):
         self.plot_widget, self.keypoint_plot = create_plot_widget()
         left_layout.addWidget(self.plot_widget)
     
-        # Create navigation controls
+        # Create navigation controls with play/pause
         self.nav_controls = QHBoxLayout()
+        
+        # Add play button (will toggle between play/pause)
+        self.play_button = QPushButton()
+        self.play_button.setIcon(QIcon.fromTheme("media-playback-start"))
+        self.play_button.setFixedSize(32, 32)
+        self.play_button.clicked.connect(self.toggle_playback)
+        
         self.prev_frame_button = QPushButton("←")
         self.prev_frame_button.clicked.connect(self.prev_frame)
+        
         self.frame_slider = QSlider(Qt.Horizontal)
         self.frame_slider.setMinimum(0)
         self.frame_slider.valueChanged.connect(self.on_frame_change)
+        self.frame_slider.sliderPressed.connect(self.on_slider_pressed)
+        self.frame_slider.sliderReleased.connect(self.on_slider_released)
+        
         self.next_frame_button = QPushButton("→")
         self.next_frame_button.clicked.connect(self.next_frame)
         self.frame_counter = QLabel("Frame: 0/0")
     
+        self.nav_controls.addWidget(self.play_button)
         self.nav_controls.addWidget(self.prev_frame_button)
         self.nav_controls.addWidget(self.frame_slider)
         self.nav_controls.addWidget(self.next_frame_button)
@@ -167,32 +184,42 @@ class PoseEditor(QMainWindow):
 
     def display_frame(self):
         if self.current_frame is not None:
-            # Only do the minimum needed for visual feedback
-            frame = self.current_frame.copy()
-            if self.black_and_white:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-            if self.pose_data is not None:
-                self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
-                for i, point in enumerate(self.current_pose):
-                    radius = 8 if i == self.selected_point else 5
-                    color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
-                    cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+            # Use cached pixmap when possible
+            if not hasattr(self, '_cached_frame') or self._cached_frame_idx != self.current_frame_idx or self._needs_redraw:
+                # Only do the minimum needed for visual feedback
+                frame = self.current_frame.copy()
+                
+                if self.black_and_white:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+                    
+                if self.pose_data is not None:
+                    self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+                    for i, point in enumerate(self.current_pose):
+                        radius = 8 if i == self.selected_point else 5
+                        color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
+                        cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
 
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            height, width, channel = frame_rgb.shape
-            bytes_per_line = 3 * width
-            q_img = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(q_img)
+                # Convert to QPixmap only when necessary
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                height, width, channel = frame_rgb.shape
+                bytes_per_line = 3 * width
+                q_img = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
+                self._base_pixmap = QPixmap.fromImage(q_img)
+                self._cached_frame_idx = self.current_frame_idx
+                self._needs_redraw = False
+                
+            # Apply zoom to cached base pixmap
+            scaled_width = int(self._base_pixmap.width() * self.zoom_level)
+            scaled_height = int(self._base_pixmap.height() * self.zoom_level)
 
-            scaled_width = int(width * self.zoom_level)
-            scaled_height = int(height * self.zoom_level)
-
-            scaled_pixmap = pixmap.scaled(
+            # Use faster transformation when dragging
+            transformation = Qt.FastTransformation if self.dragging else Qt.SmoothTransformation
+            scaled_pixmap = self._base_pixmap.scaled(
                 scaled_width,
                 scaled_height,
                 Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
+                transformation
             )
 
             self.label.setPixmap(scaled_pixmap)
@@ -247,16 +274,24 @@ class PoseEditor(QMainWindow):
 
     def update_frame(self):
         if hasattr(self, 'cap') and self.cap:
+            # Set frame position
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
             ret, frame = self.cap.read()
             if ret:
+                # Update the current frame
                 self.current_frame = frame
                 self.frame_counter.setText(f"Frame: {self.current_frame_idx}/{self.frame_slider.maximum()}")
                 
-                # Update the display now that we have a new frame
+                # Mark for redraw and force cache update
+                self._needs_redraw = True
+                
+                # Update the display
                 self.display_frame()
                 self.update_coordinate_inputs()
-                self.update_plot()
+                
+                # Only update plot if not in the middle of a playback
+                if not self.playing:
+                    self.update_plot()
             else:
                 self.frame_counter.setText(f"Frame: {self.current_frame_idx}/{self.frame_slider.maximum()}")
 
@@ -271,18 +306,34 @@ class PoseEditor(QMainWindow):
             self.current_frame_idx = 0
             width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
             if width <= 0 or height <= 0:
                 self.cap.release()
                 self.cap = None
                 return
-            label_height = min(480, height)  # Adaptive height based on video dimensions
-            height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            
+                
             # Calculate aspect ratio and set fixed size for label
             aspect_ratio = width / height
             label_height = 480  # Fixed height
             label_width = int(label_height * aspect_ratio)
             self.label.setFixedSize(label_width, label_height)
+            
+            # Update play button to show correct icon
+            self.play_button.setIcon(QIcon.fromTheme("media-playback-start"))
+            self.playing = False
+            
+            # Set smooth stepping for the slider based on total frames
+            self.frame_slider.setPageStep(max(1, total_frames // 100))
+            
+            # Reset cached frame data
+            if hasattr(self, '_cached_frame_idx'):
+                delattr(self, '_cached_frame_idx')
+            self._needs_redraw = True
+            
+            # Get actual video FPS
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            if fps > 0:
+                self.play_speed = fps
             
             self.update_frame()
     
@@ -340,9 +391,7 @@ class PoseEditor(QMainWindow):
     def eventFilter(self, source, event):
         if source is self.label:
             if event.type() == event.MouseButtonPress:
-                # Get the position within the label
                 pos = event.pos()
-                # Convert to scaled position
                 scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
                                    int(pos.y() / self.zoom_level))
                 new_selected_point = self.get_selected_point(scaled_pos)
@@ -356,8 +405,8 @@ class PoseEditor(QMainWindow):
                         self.keypoint_dropdown.blockSignals(False)
                         self.dragging = True
                         self.update_coordinate_inputs()
+                        self._needs_redraw = True
                         self.display_frame()
-                        self.update_plot()  # Update plot after visual updates
                         return True
                 elif event.button() == Qt.RightButton:
                     self.selected_point = None
@@ -367,25 +416,26 @@ class PoseEditor(QMainWindow):
                     self.keypoint_dropdown.setCurrentIndex(-1)
                     self.keypoint_dropdown.blockSignals(False)
                     self.update_coordinate_inputs()
+                    self._needs_redraw = True
                     self.display_frame()
-                    self.update_plot()  # Update plot after visual updates
+                    # Only update plot when not dragging
+                    self.update_plot()
                     return True
                     
             elif event.type() == event.MouseMove and self.dragging and self.selected_point is not None:
                 pos = event.pos()
                 scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
                                    int(pos.y() / self.zoom_level))
-                # Update data and visuals only, skip plot update during drag
+                # Update point position
                 self.move_point(scaled_pos)
-                self.update_coordinate_inputs()
+                # Update display without updating plot for performance
                 self.display_frame()
-                # Skip plot update during dragging for better performance
                 return True
                 
             elif event.type() == event.MouseButtonRelease:
                 if event.button() == Qt.LeftButton and self.dragging:
                     self.dragging = False
-                    # Update plot only when the drag is complete
+                    # Only update plot when done dragging
                     self.update_plot()
                     return True
         
@@ -417,28 +467,103 @@ class PoseEditor(QMainWindow):
                 self.pose_data.to_csv(file_path, index=False)
 
     def on_frame_change(self, value):
+        # Always update the frame counter text
         self.current_frame_idx = value
-        self.update_frame()
-        # update_frame now calls update_coordinate_inputs
-        self.update_plot()
+        self.frame_counter.setText(f"Frame: {self.current_frame_idx}/{self.frame_slider.maximum()}")
+        
+        # If we're dragging the slider, provide visual feedback but with lighter processing
+        if self.frame_slider.isSliderDown():
+            # Update frame with lightweight preview (skip plot updates during dragging)
+            self.preview_frame_at_position(value)
+        else:
+            # Full update when slider is released or changed via buttons
+            self.update_frame()
+            self.update_plot()
+
+    def preview_frame_at_position(self, frame_idx):
+        """Provides a fast preview while dragging the slider"""
+        if hasattr(self, 'cap') and self.cap:
+            # Set frame position
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = self.cap.read()
+            
+            if ret:
+                # Store current frame but with reduced processing
+                self.current_frame = frame
+                
+                # Use simplified frame display for better performance during dragging
+                frame_preview = frame.copy()
+                
+                # Convert to black and white if needed (this is fast)
+                if self.black_and_white:
+                    frame_preview = cv2.cvtColor(frame_preview, cv2.COLOR_BGR2GRAY)
+                    frame_preview = cv2.cvtColor(frame_preview, cv2.COLOR_GRAY2RGB)
+                
+                # Add keypoints with simplified rendering
+                if self.pose_data is not None:
+                    # Update current pose data for this frame
+                    self.current_pose = self.pose_data.iloc[frame_idx].values.reshape(-1, 2)
+                    
+                    # Draw simplified keypoints (faster)
+                    for i, point in enumerate(self.current_pose):
+                        # Use uniform color and size during dragging for speed
+                        cv2.circle(frame_preview, (int(point[0]), int(point[1])), 5, (0, 255, 0), -1)
+                
+                # Convert to QPixmap with fast transformation
+                frame_rgb = cv2.cvtColor(frame_preview, cv2.COLOR_BGR2RGB)
+                height, width, channel = frame_rgb.shape
+                bytes_per_line = 3 * width
+                q_img = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
+                pixmap = QPixmap.fromImage(q_img)
+                
+                # Scale with fast transformation
+                scaled_width = int(pixmap.width() * self.zoom_level)
+                scaled_height = int(pixmap.height() * self.zoom_level)
+                scaled_pixmap = pixmap.scaled(
+                    scaled_width, 
+                    scaled_height,
+                    Qt.KeepAspectRatio,
+                    Qt.FastTransformation  # Always use fast transformation during dragging
+                )
+                
+                # Update display
+                self.label.setPixmap(scaled_pixmap)
+                self.label.setFixedSize(scaled_width, scaled_height)
+                
+                # Update coordinates display
+                self.update_coordinate_inputs()
+
+    def on_slider_pressed(self):
+        # Pause playback if we're scrubbing with the slider
+        if self.playing:
+            self.pause_playback()
+            self._was_playing = True
+        else:
+            self._was_playing = False
+        
+        # Store starting frame for performance optimization
+        self._slider_start_frame = self.current_frame_idx
+
+    def on_slider_released(self):
+        # Resume playback if it was playing before scrubbing
+        if getattr(self, '_was_playing', False):
+            self.start_playback()
+        
+        # Force a full update if the frame actually changed
+        if self._slider_start_frame != self.current_frame_idx:
+            self._needs_redraw = True  # Force redraw after slider release
+            self.update_frame()  # Full update with proper rendering
+            self.update_plot()   # Update the plot now that we've settled on a frame
 
     def next_frame(self):
         if hasattr(self, 'cap') and self.cap and self.current_frame_idx < self.frame_slider.maximum():
             self.current_frame_idx += 1
             self.frame_slider.setValue(self.current_frame_idx)
-            # Force an update if setValue doesn't trigger the callback
-            self.update_frame()
-            self.update_coordinate_inputs()
-            self.update_plot()
-
+    
     def prev_frame(self):
         if hasattr(self, 'cap') and self.cap and self.current_frame_idx > 0:
             self.current_frame_idx -= 1
             self.frame_slider.setValue(self.current_frame_idx)
-            # Force an update if setValue doesn't trigger the callback
-            self.update_frame()
-            self.update_coordinate_inputs()
-            self.update_plot()
     
     def on_keypoint_selected(self, index):
         if 0 <= index < len(self.keypoint_names):
@@ -459,23 +584,31 @@ class PoseEditor(QMainWindow):
 
     def move_point(self, pos):
         if self.selected_point is not None and self.pose_data is not None:
-            # Update the pose data directly
             x, y = pos.x(), pos.y()
             
-            # Validate coordinates aren't outside the image bounds
+            # Quick bounds check
             if x < 0 or y < 0:
                 return
                 
-            # Update data first
-            self.pose_data.iloc[self.current_frame_idx, 
-                              self.selected_point * 2] = x
-            self.pose_data.iloc[self.current_frame_idx, 
-                              self.selected_point * 2 + 1] = y
-            self.current_pose[self.selected_point] = [x, y]  # Update current_pose
+            # Skip update if position hasn't changed significantly
+            current_x = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2]
+            current_y = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1]
             
-            # Update coordinate inputs to reflect the new position
+            # Only update if position changed by at least 1 pixel to avoid unnecessary redraws
+            if abs(x - current_x) < 1 and abs(y - current_y) < 1:
+                return
+                
+            # Update data
+            self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2] = x
+            self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1] = y
+            self.current_pose[self.selected_point] = [x, y]
+            
+            # Update coordinate inputs
             self.x_coord_input.setText(str(int(x)))
             self.y_coord_input.setText(str(int(y)))
+            
+            # Mark for redraw
+            self._needs_redraw = True
     
     def update_keypoint_coordinates(self):
         if self.selected_point is not None and self.pose_data is not None:
@@ -503,6 +636,10 @@ class PoseEditor(QMainWindow):
             self.display_frame()
             
     def update_plot(self):
+        # Only update plot if we have data and aren't dragging (for responsiveness)
+        if self.dragging:
+            return
+            
         if hasattr(self, 'keypoint_plot') and self.pose_data is not None and self.selected_point is not None:
             total_frames = len(self.pose_data)
             self.keypoint_plot.plot_keypoint_trajectory(
@@ -517,6 +654,70 @@ class PoseEditor(QMainWindow):
     def mouseMoveEvent(self, event):
         # Note: We'll handle this in the eventFilter instead to avoid duplicate handling
         pass
+
+    def toggle_playback(self):
+        if not hasattr(self, 'cap') or not self.cap:
+            return
+            
+        if self.playing:
+            self.pause_playback()
+        else:
+            self.start_playback()
+    
+    def start_playback(self):
+        self.playing = True
+        # Use a custom icon or text that clearly indicates the pause state
+        self.play_button.setIcon(QIcon.fromTheme("media-playback-pause"))
+        
+        # Calculate frame interval based on video FPS if available
+        if hasattr(self, 'cap') and self.cap:
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            if fps > 0:
+                self.play_speed = fps
+        
+        frame_interval = int(1000 / self.play_speed)  # Convert FPS to milliseconds
+        self.play_timer.start(frame_interval)
+        
+        # Disable manual frame controls during playback
+        self.frame_slider.setEnabled(False)
+        self.prev_frame_button.setEnabled(False)
+        self.next_frame_button.setEnabled(False)
+    
+    def pause_playback(self):
+        self.playing = False
+        # Use a custom icon or text that clearly indicates the play state
+        self.play_button.setIcon(QIcon.fromTheme("media-playback-start"))
+        self.play_timer.stop()
+        
+        # Re-enable manual frame controls
+        self.frame_slider.setEnabled(True)
+        self.prev_frame_button.setEnabled(True)
+        self.next_frame_button.setEnabled(True)
+        
+        # Update plot once playback stops
+        self.update_plot()
+    
+    def advance_frame(self):
+        if self.current_frame_idx >= self.frame_slider.maximum():
+            self.pause_playback()  # Stop playback at end of video
+            return
+            
+        self.current_frame_idx += 1
+        
+        # Update slider without triggering on_frame_change
+        self.frame_slider.blockSignals(True)
+        self.frame_slider.setValue(self.current_frame_idx)
+        self.frame_slider.blockSignals(False)
+        
+        # Update frame but skip plot update during playback
+        self.update_frame()
+    
+    def closeEvent(self, event):
+        if hasattr(self, 'play_timer') and self.play_timer.isActive():
+            self.play_timer.stop()
+        if hasattr(self, 'cap') and self.cap:
+            self.cap.release()
+        super().closeEvent(event)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
