@@ -29,10 +29,10 @@ numpy>=1.19.0
 
 ## Installation
 
-### Windows Quick Start
+### Quick Start
 
-1. Download the ZIP file from the GitHub repository and extract it. 
-2. Optional: [Install Python](https://www.python.org/downloads/) if you don’t have it yet.
+1. Download the ZIP file from the GitHub repository and extract it.
+2. (Conditional:) [Install Python](https://www.python.org/downloads/) if you don’t have it yet.
 3. Open a terminal (or Command Prompt) inside the extracted folder.
 4. Install requirements:
    ```bash
@@ -43,7 +43,7 @@ numpy>=1.19.0
    python pose_annotator.py
    ```
 
-### Using Conda on Windows (Recommended)
+### Using Conda (Recommended)
 
 1. Open your Anaconda Prompt.
 2. Create or activate a conda environment:
@@ -61,22 +61,6 @@ numpy>=1.19.0
    pip install -r requirements.txt
    ```
 5. Run the application:
-   ```bash
-   python pose_annotator.py
-   ```
-
-### Linux/Mac Users
-
-1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd pose-editor
-   ```
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Run the application:
    ```bash
    python pose_annotator.py
    ```
