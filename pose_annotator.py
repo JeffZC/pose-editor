@@ -5,10 +5,77 @@ import numpy as np
 import time
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, 
                            QVBoxLayout, QWidget, QFileDialog, QHBoxLayout, QSlider,
-                           QScrollArea, QGroupBox, QComboBox, QLineEdit)
+                           QScrollArea, QGroupBox, QComboBox, QLineEdit, QShortcut)
 from PyQt5.QtCore import Qt, QPoint, QSize, QTimer
-from PyQt5.QtGui import QImage, QPixmap, QCursor, QIcon
+from PyQt5.QtGui import QImage, QPixmap, QCursor, QIcon, QKeySequence
 from plot_utils import create_plot_widget
+
+# Command class for undo/redo operations
+class KeypointCommand:
+    def __init__(self, editor, frame_idx, point_idx, old_x, old_y, new_x, new_y):
+        self.editor = editor
+        self.frame_idx = frame_idx
+        self.point_idx = point_idx
+        self.old_x = old_x
+        self.old_y = old_y
+        self.new_x = new_x
+        self.new_y = new_y
+        
+    def undo(self):
+        """Restore the previous state"""
+        # Check if we need to change frames
+        if self.frame_idx != self.editor.current_frame_idx:
+            self.editor.current_frame_idx = self.frame_idx
+            self.editor.frame_slider.setValue(self.frame_idx)
+        
+        # Check if we need to change selected point
+        if self.point_idx != self.editor.selected_point:
+            self.editor.selected_point = self.point_idx
+            self.editor.keypoint_dropdown.blockSignals(True)
+            self.editor.keypoint_dropdown.setCurrentIndex(self.point_idx)
+            self.editor.keypoint_dropdown.blockSignals(False)
+        
+        # Restore old coordinates
+        self.editor.pose_data.iloc[self.frame_idx, self.point_idx * 2] = self.old_x
+        self.editor.pose_data.iloc[self.frame_idx, self.point_idx * 2 + 1] = self.old_y
+        
+        # Update current pose
+        if self.editor.current_pose is not None:
+            self.editor.current_pose[self.point_idx] = [self.old_x, self.old_y]
+        
+        # Update UI
+        self.editor._needs_redraw = True
+        self.editor.update_coordinate_inputs()
+        self.editor.display_frame()
+        self.editor.update_plot()
+        
+    def redo(self):
+        """Apply the change again"""
+        # Check if we need to change frames
+        if self.frame_idx != self.editor.current_frame_idx:
+            self.editor.current_frame_idx = self.frame_idx
+            self.editor.frame_slider.setValue(self.frame_idx)
+        
+        # Check if we need to change selected point
+        if self.point_idx != self.editor.selected_point:
+            self.editor.selected_point = self.point_idx
+            self.editor.keypoint_dropdown.blockSignals(True)
+            self.editor.keypoint_dropdown.setCurrentIndex(self.point_idx)
+            self.editor.keypoint_dropdown.blockSignals(False)
+        
+        # Apply new coordinates
+        self.editor.pose_data.iloc[self.frame_idx, self.point_idx * 2] = self.new_x
+        self.editor.pose_data.iloc[self.frame_idx, self.point_idx * 2 + 1] = self.new_y
+        
+        # Update current pose
+        if self.editor.current_pose is not None:
+            self.editor.current_pose[self.point_idx] = [self.new_x, self.new_y]
+        
+        # Update UI
+        self.editor._needs_redraw = True
+        self.editor.update_coordinate_inputs()
+        self.editor.display_frame()
+        self.editor.update_plot()
 
 class PoseEditor(QMainWindow):
     def __init__(self):
@@ -32,6 +99,11 @@ class PoseEditor(QMainWindow):
         self.play_speed = 30  # frames per second
         self.play_timer = QTimer()
         self.play_timer.timeout.connect(self.advance_frame)
+        
+        # Initialize command history for undo/redo operations
+        self.undo_stack = []
+        self.redo_stack = []
+        self.max_history = 50
 
         # Add keypoint names (default, to be updated based on pose data)
         self.keypoint_names = []
@@ -161,6 +233,22 @@ class PoseEditor(QMainWindow):
         self.coordinates_layout.addWidget(self.confirm_button)
         self.coordinates_group_box.setLayout(self.coordinates_layout)
         right_layout.addWidget(self.coordinates_group_box)
+
+        # Create undo/redo group box (new)
+        self.history_group_box = QGroupBox("Edit History")
+        self.history_layout = QHBoxLayout()  # Horizontal layout for buttons side by side
+        self.undo_button = QPushButton("Undo")
+        self.undo_button.setShortcut(QKeySequence("Ctrl+Z"))
+        self.undo_button.clicked.connect(self.undo_last_command)
+        self.undo_button.setEnabled(False)  # Disabled by default
+        self.redo_button = QPushButton("Redo")
+        self.redo_button.setShortcut(QKeySequence("Ctrl+Y"))
+        self.redo_button.clicked.connect(self.redo_last_command)
+        self.redo_button.setEnabled(False)  # Disabled by default
+        self.history_layout.addWidget(self.undo_button)
+        self.history_layout.addWidget(self.redo_button)
+        self.history_group_box.setLayout(self.history_layout)
+        right_layout.addWidget(self.history_group_box)
     
         # Create black and white switch group box
         self.bw_group_box = QGroupBox("Black and White Switch")
@@ -435,6 +523,23 @@ class PoseEditor(QMainWindow):
             elif event.type() == event.MouseButtonRelease:
                 if event.button() == Qt.LeftButton and self.dragging:
                     self.dragging = False
+                    
+                    # Create command when drag completes
+                    if hasattr(self, '_drag_start_pos'):
+                        start_x, start_y = self._drag_start_pos
+                        current_x = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2]
+                        current_y = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1]
+                        
+                        # Only add command if position actually changed
+                        if abs(start_x - current_x) > 0 or abs(start_y - current_y) > 0:
+                            self.create_move_command(
+                                self.selected_point,
+                                start_x, start_y,
+                                current_x, current_y
+                            )
+                        
+                        delattr(self, '_drag_start_pos')
+                    
                     # Only update plot when done dragging
                     self.update_plot()
                     return True
@@ -597,7 +702,11 @@ class PoseEditor(QMainWindow):
             # Only update if position changed by at least 1 pixel to avoid unnecessary redraws
             if abs(x - current_x) < 1 and abs(y - current_y) < 1:
                 return
-                
+            
+            # Store initial position for undo when first starting to drag
+            if not hasattr(self, '_drag_start_pos'):
+                self._drag_start_pos = (current_x, current_y)
+            
             # Update data
             self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2] = x
             self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1] = y
@@ -609,31 +718,45 @@ class PoseEditor(QMainWindow):
             
             # Mark for redraw
             self._needs_redraw = True
-    
+
     def update_keypoint_coordinates(self):
         if self.selected_point is not None and self.pose_data is not None:
             try:
-                x = int(self.x_coord_input.text())
-                y = int(self.y_coord_input.text())
+                new_x = int(self.x_coord_input.text())
+                new_y = int(self.y_coord_input.text())
             except ValueError:
                 return
             
             # Validate coordinates
-            if x < 0 or y < 0:
+            if new_x < 0 or new_y < 0:
                 return
             
-            # Update the pose data
-            self.pose_data.iloc[self.current_frame_idx, 
-                              self.selected_point * 2] = x
-            self.pose_data.iloc[self.current_frame_idx, 
-                              self.selected_point * 2 + 1] = y
+            # Get current position
+            old_x = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2]
+            old_y = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1]
             
-            # Update current_pose to reflect the changes
-            if self.current_pose is not None and self.selected_point < len(self.current_pose):
-                self.current_pose[self.selected_point] = [x, y]
+            # Only create command if position changed
+            if old_x != new_x or old_y != new_y:
+                # Create command for this change
+                self.create_move_command(
+                    self.selected_point,
+                    old_x, old_y,
+                    new_x, new_y
+                )
                 
-            # Display the updated frame
-            self.display_frame()
+                # Update the pose data
+                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2] = new_x
+                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1] = new_y
+                
+                # Update current_pose to reflect the changes
+                if self.current_pose is not None and self.selected_point < len(self.current_pose):
+                    self.current_pose[self.selected_point] = [new_x, new_y]
+                    
+                # Display the updated frame
+                self.display_frame()
+                
+                # Update the plot
+                self.update_plot()
             
     def update_plot(self):
         # Only update plot if we have data and aren't dragging (for responsiveness)
@@ -718,6 +841,54 @@ class PoseEditor(QMainWindow):
         if hasattr(self, 'cap') and self.cap:
             self.cap.release()
         super().closeEvent(event)
+
+    def add_command(self, command):
+        """Add a command to the history and execute it"""
+        self.undo_stack.append(command)
+        # Clear the redo stack when a new command is added
+        self.redo_stack = []
+        self.redo_button.setEnabled(False)
+        
+        # Limit undo stack size
+        if len(self.undo_stack) > self.max_history:
+            self.undo_stack.pop(0)
+        
+        self.undo_button.setEnabled(True)
+
+    def undo_last_command(self):
+        """Undo the most recent command"""
+        if self.undo_stack:
+            command = self.undo_stack.pop()
+            self.redo_stack.append(command)
+            command.undo()
+            
+            # Update button states
+            self.redo_button.setEnabled(True)
+            self.undo_button.setEnabled(len(self.undo_stack) > 0)
+
+    def redo_last_command(self):
+        """Redo the most recently undone command"""
+        if self.redo_stack:
+            command = self.redo_stack.pop()
+            self.undo_stack.append(command)
+            command.redo()
+            
+            # Update button states
+            self.undo_button.setEnabled(True)
+            self.redo_button.setEnabled(len(self.redo_stack) > 0)
+
+    def create_move_command(self, point_idx, old_x, old_y, new_x, new_y):
+        """Create and register a move command"""
+        # Only create a command if something actually changed
+        if old_x != new_x or old_y != new_y:
+            command = KeypointCommand(
+                self, 
+                self.current_frame_idx,
+                point_idx, 
+                old_x, old_y, 
+                new_x, new_y
+            )
+            self.add_command(command)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
