@@ -25,6 +25,7 @@ PyQt5>=5.15.0
 opencv-python>=4.5.0
 pandas>=1.3.0
 numpy>=1.19.0
+matplotlib>=3.4.0
 ```
 
 ## Installation
