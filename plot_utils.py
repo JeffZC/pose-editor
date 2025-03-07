@@ -60,8 +60,8 @@ class KeypointPlot(FigureCanvasQTAgg):
             for i in range(len(pose_data)):
                 row = pose_data.iloc[i]
                 try:
-                    x = row[keypoint_idx * 2]
-                    y = row[keypoint_idx * 2 + 1]
+                    x = row.iloc[keypoint_idx * 2]
+                    y = row.iloc[keypoint_idx * 2 + 1]
                     if not np.isnan(x) and not np.isnan(y):
                         x_coords.append(x)
                         y_coords.append(y)
