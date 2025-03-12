@@ -50,7 +50,7 @@ mediapipe>=0.10.21
 1. Open your Anaconda Prompt.
 2. Create or activate a conda environment:
    ```bash
-   conda create -n pose-editor python=3.9
+   conda create -n pose-editor python=3.12
    conda activate pose-editor
    ```
 3. Clone or download the repository and navigate into it:
