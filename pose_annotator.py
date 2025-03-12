@@ -102,6 +102,8 @@ class PoseEditor(QMainWindow):
         self.play_timer = QTimer()
         self.play_timer.timeout.connect(self.advance_frame)
         self.rotation_angle = 0  # Initialize rotation angle (0, 90, 180, 270)
+        self.play_button_size = 35  # Size in pixels for play button
+        self.play_icon_size = 30    # Size in pixels for play icon
         
         # Initialize command history for undo/redo operations
         self.undo_stack = []
@@ -156,10 +158,13 @@ class PoseEditor(QMainWindow):
         # Add play button (will toggle between play/pause)
         self.play_button = QPushButton()
         self.play_button.setIcon(QIcon.fromTheme("media-playback-start"))
-        self.play_button.setFixedSize(32, 32)
+        self.play_button.setIconSize(QSize(self.play_icon_size, self.play_icon_size))
+        self.play_button.setFixedSize(self.play_button_size, self.play_button_size)
+        self.play_button.setStyleSheet("padding: 0px;")  # Remove padding to maximize icon space
         self.play_button.clicked.connect(self.toggle_playback)
         
         self.prev_frame_button = QPushButton("←")
+        self.prev_frame_button.setFixedWidth(25)
         self.prev_frame_button.clicked.connect(self.prev_frame)
         
         self.frame_slider = QSlider(Qt.Horizontal)
@@ -169,6 +174,7 @@ class PoseEditor(QMainWindow):
         self.frame_slider.sliderReleased.connect(self.on_slider_released)
         
         self.next_frame_button = QPushButton("→")
+        self.next_frame_button.setFixedWidth(25)
         self.next_frame_button.clicked.connect(self.next_frame)
         self.frame_counter = QLabel("Frame: 0/0")
     
@@ -187,17 +193,17 @@ class PoseEditor(QMainWindow):
         self.video_control_group_box = QGroupBox("Video Controls")
         self.video_control_layout = QVBoxLayout()
 
-        # Add Load Video button at the top of the video controls
+        # Add Load Video button
         self.load_video_button = QPushButton("Load Video")
         self.load_video_button.clicked.connect(self.load_video)
         self.video_control_layout.addWidget(self.load_video_button)
 
-        # Move the rotate button here, between Load Video and Zoom controls
+        # Add the rotate button
         self.rotate_button = QPushButton("Rotate View (90°)")
         self.rotate_button.clicked.connect(self.rotate_video)
         self.video_control_layout.addWidget(self.rotate_button)
 
-        # Add black and white toggle button here
+        # Add black and white toggle button
         self.bw_button = QPushButton("Toggle Black and White")
         self.bw_button.clicked.connect(self.toggle_black_and_white)
         self.video_control_layout.addWidget(self.bw_button)
@@ -862,7 +868,7 @@ class PoseEditor(QMainWindow):
         self.frame_slider.setEnabled(False)
         self.prev_frame_button.setEnabled(False)
         self.next_frame_button.setEnabled(False)
-    
+
     def pause_playback(self):
         self.playing = False
         # Use a custom icon or text that clearly indicates the play state
