@@ -9,6 +9,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton,
 from PyQt5.QtCore import Qt, QPoint, QSize, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QCursor, QIcon, QKeySequence
 from plot_utils import create_plot_widget
+from mediapipe_utils import get_pose_landmarks_from_frame, process_video_with_mediapipe
+from PyQt5.QtWidgets import QProgressDialog, QMessageBox
 
 # Command class for undo/redo operations
 class KeypointCommand:
@@ -99,6 +101,7 @@ class PoseEditor(QMainWindow):
         self.play_speed = 30  # frames per second
         self.play_timer = QTimer()
         self.play_timer.timeout.connect(self.advance_frame)
+        self.rotation_angle = 0  # Initialize rotation angle (0, 90, 180, 270)
         
         # Initialize command history for undo/redo operations
         self.undo_stack = []
@@ -122,16 +125,6 @@ class PoseEditor(QMainWindow):
     
         # Create file controls
         self.file_controls = QHBoxLayout()
-        self.load_video_button = QPushButton("Load Video")
-        self.load_video_button.clicked.connect(self.load_video)
-        self.load_pose_button = QPushButton("Load Pose")
-        self.load_pose_button.clicked.connect(self.load_pose)
-        self.save_button = QPushButton("Save Poses")
-        self.save_button.clicked.connect(self.save_pose)
-    
-        self.file_controls.addWidget(self.load_video_button)
-        self.file_controls.addWidget(self.load_pose_button)
-        self.file_controls.addWidget(self.save_button)
         left_layout.addLayout(self.file_controls)
     
         # Create scroll area for video
@@ -190,50 +183,79 @@ class PoseEditor(QMainWindow):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
     
-        # Create zoom controls group box
-        self.zoom_group_box = QGroupBox("Zoom Controls")
-        self.zoom_group_box.setFixedHeight(100)  # Set fixed height for the zoom controls box
-        self.zoom_controls = QVBoxLayout()  # Change to vertical layout
-        self.zoom_buttons_layout = QHBoxLayout()  # Horizontal layout for buttons
-        self.zoom_out_button = QPushButton("-")
+        # Create video controls group box
+        self.video_control_group_box = QGroupBox("Video Controls")
+        self.video_control_layout = QVBoxLayout()
+
+        # Add Load Video button at the top of the video controls
+        self.load_video_button = QPushButton("Load Video")
+        self.load_video_button.clicked.connect(self.load_video)
+        self.video_control_layout.addWidget(self.load_video_button)
+
+        # Move the rotate button here, between Load Video and Zoom controls
+        self.rotate_button = QPushButton("Rotate View (90°)")
+        self.rotate_button.clicked.connect(self.rotate_video)
+        self.video_control_layout.addWidget(self.rotate_button)
+
+        # Add black and white toggle button here
+        self.bw_button = QPushButton("Toggle Black and White")
+        self.bw_button.clicked.connect(self.toggle_black_and_white)
+        self.video_control_layout.addWidget(self.bw_button)
+
+        # Create zoom controls in a horizontal layout
+        self.zoom_controls = QHBoxLayout()
+        self.zoom_out_button = QPushButton("Zoom Out (-)")
         self.zoom_out_button.clicked.connect(self.zoom_out)
-        self.zoom_in_button = QPushButton("+")
+        self.zoom_in_button = QPushButton("Zoom In (+)")
         self.zoom_in_button.clicked.connect(self.zoom_in)
+        self.zoom_controls.addWidget(self.zoom_out_button)
+        self.zoom_controls.addWidget(self.zoom_in_button)
+
+        # Add the zoom controls horizontal layout to the vertical layout
+        self.video_control_layout.addLayout(self.zoom_controls)
         self.zoom_label = QLabel("Zoom: 100%")
-    
-        self.zoom_buttons_layout.addWidget(self.zoom_out_button)
-        self.zoom_buttons_layout.addWidget(self.zoom_in_button)
-        self.zoom_controls.addLayout(self.zoom_buttons_layout)
-        self.zoom_controls.addWidget(self.zoom_label)
-        self.zoom_controls.addStretch()
-        self.zoom_group_box.setLayout(self.zoom_controls)
-        right_layout.addWidget(self.zoom_group_box)
+        self.video_control_layout.addWidget(self.zoom_label)
+        self.video_control_group_box.setLayout(self.video_control_layout)
+        right_layout.addWidget(self.video_control_group_box)
     
         # Create keypoint selection group box
-        self.keypoint_group_box = QGroupBox("Select Keypoint")
-        self.keypoint_layout = QVBoxLayout()
+        self.keypoint_ops_group_box = QGroupBox("Keypoint Operations")
+        self.keypoint_ops_layout = QVBoxLayout()
+
+        # Add keypoint selection with label
+        self.keypoint_selection_layout = QHBoxLayout()
+        self.keypoint_selection_label = QLabel("Select Keypoint:")
         self.keypoint_dropdown = QComboBox()
         self.keypoint_dropdown.addItems(self.keypoint_names)
         self.keypoint_dropdown.currentIndexChanged.connect(self.on_keypoint_selected)
-        self.keypoint_layout.addWidget(self.keypoint_dropdown)
-        self.keypoint_group_box.setLayout(self.keypoint_layout)
-        right_layout.addWidget(self.keypoint_group_box)
-    
-        # Create keypoint coordinates group box
-        self.coordinates_group_box = QGroupBox("Keypoint Coordinates")
-        self.coordinates_layout = QVBoxLayout()
-        self.x_coord_input = QLineEdit()
-        self.x_coord_input.setPlaceholderText("X Coordinate")
-        self.y_coord_input = QLineEdit()
-        self.y_coord_input.setPlaceholderText("Y Coordinate")
-        self.confirm_button = QPushButton("Confirm")
-        self.confirm_button.clicked.connect(self.update_keypoint_coordinates)
-        self.coordinates_layout.addWidget(self.x_coord_input)
-        self.coordinates_layout.addWidget(self.y_coord_input)
-        self.coordinates_layout.addWidget(self.confirm_button)
-        self.coordinates_group_box.setLayout(self.coordinates_layout)
-        right_layout.addWidget(self.coordinates_group_box)
+        self.keypoint_selection_layout.addWidget(self.keypoint_selection_label)
+        self.keypoint_selection_layout.addWidget(self.keypoint_dropdown)
+        self.keypoint_ops_layout.addLayout(self.keypoint_selection_layout)
 
+        # Add coordinate inputs with labels
+        self.x_coord_layout = QHBoxLayout()
+        self.x_coord_label = QLabel("X Coordinate:")
+        self.x_coord_input = QLineEdit()
+        self.x_coord_layout.addWidget(self.x_coord_label)
+        self.x_coord_layout.addWidget(self.x_coord_input)
+        self.keypoint_ops_layout.addLayout(self.x_coord_layout)
+
+        self.y_coord_layout = QHBoxLayout()
+        self.y_coord_label = QLabel("Y Coordinate:")
+        self.y_coord_input = QLineEdit()
+        self.y_coord_layout.addWidget(self.y_coord_label)
+        self.y_coord_layout.addWidget(self.y_coord_input)
+        self.keypoint_ops_layout.addLayout(self.y_coord_layout)
+
+        # Add confirm button
+        self.confirm_button = QPushButton("Update Coordinates")
+        self.confirm_button.clicked.connect(self.update_keypoint_coordinates)
+        self.keypoint_ops_layout.addWidget(self.confirm_button)
+
+        # Set the layout and add to right panel
+        self.keypoint_ops_group_box.setLayout(self.keypoint_ops_layout)
+        right_layout.addWidget(self.keypoint_ops_group_box)
+    
         # Create undo/redo group box (new)
         self.history_group_box = QGroupBox("Edit History")
         self.history_layout = QHBoxLayout()  # Horizontal layout for buttons side by side
@@ -249,16 +271,34 @@ class PoseEditor(QMainWindow):
         self.history_layout.addWidget(self.redo_button)
         self.history_group_box.setLayout(self.history_layout)
         right_layout.addWidget(self.history_group_box)
-    
-        # Create black and white switch group box
-        self.bw_group_box = QGroupBox("Black and White Switch")
-        self.bw_layout = QVBoxLayout()
-        self.bw_button = QPushButton("Toggle Black and White")
-        self.bw_button.clicked.connect(self.toggle_black_and_white)
-        self.bw_layout.addWidget(self.bw_button)
-        self.bw_group_box.setLayout(self.bw_layout)
-        right_layout.addWidget(self.bw_group_box)
         
+        # Create Pose Options group box (renamed from MediaPipe)
+        self.pose_options_group_box = QGroupBox("Pose Options")
+        self.pose_options_layout = QVBoxLayout()
+
+        # Add Load Pose button at the top
+        self.load_pose_button = QPushButton("Load Pose")
+        self.load_pose_button.clicked.connect(self.load_pose)
+        self.pose_options_layout.addWidget(self.load_pose_button)
+
+        # Add pose detection buttons
+        self.detect_current_frame_button = QPushButton("Detect Current Frame")
+        self.detect_current_frame_button.clicked.connect(self.detect_pose_current_frame)
+        self.detect_video_button = QPushButton("Detect Entire Video")
+        self.detect_video_button.clicked.connect(self.detect_pose_video)
+
+        # Add widgets to layout
+        self.pose_options_layout.addWidget(self.detect_current_frame_button)
+        self.pose_options_layout.addWidget(self.detect_video_button)
+
+        # Add Save Pose button at the bottom
+        self.save_button = QPushButton("Save Poses")
+        self.save_button.clicked.connect(self.save_pose)
+        self.pose_options_layout.addWidget(self.save_button)
+
+        self.pose_options_group_box.setLayout(self.pose_options_layout)
+        right_layout.addWidget(self.pose_options_group_box)
+                
         # Add panels to main layout
         main_layout.addWidget(left_panel, stretch=4)
         main_layout.addWidget(right_panel, stretch=1)
@@ -287,6 +327,19 @@ class PoseEditor(QMainWindow):
                         radius = 8 if i == self.selected_point else 5
                         color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
                         cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+
+                # Apply rotation if needed
+                if self.rotation_angle > 0:
+                    h, w = frame.shape[:2]
+                    center = (w // 2, h // 2)
+                    
+                    # Get rotation matrix
+                    if self.rotation_angle == 90:
+                        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                    elif self.rotation_angle == 180:
+                        frame = cv2.rotate(frame, cv2.ROTATE_180)
+                    elif self.rotation_angle == 270:
+                        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
                 # Convert to QPixmap only when necessary
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -552,11 +605,13 @@ class PoseEditor(QMainWindow):
 
     def get_selected_point(self, pos):
         if self.current_pose is not None:
+            # Transform mouse coordinates based on rotation
+            transformed_pos = self.transform_coordinates(pos)
             for i, point in enumerate(self.current_pose):
                 # Scale the detection radius with zoom level
                 detect_radius = 10 / self.zoom_level
                 if np.linalg.norm(np.array([point[0], point[1]]) - 
-                                np.array([pos.x(), pos.y()])) < detect_radius:
+                                np.array([transformed_pos.x(), transformed_pos.y()])) < detect_radius:
                     return i
         return None
 
@@ -689,7 +744,9 @@ class PoseEditor(QMainWindow):
 
     def move_point(self, pos):
         if self.selected_point is not None and self.pose_data is not None:
-            x, y = pos.x(), pos.y()
+            # Transform mouse coordinates based on rotation
+            transformed_pos = self.transform_coordinates(pos)
+            x, y = transformed_pos.x(), transformed_pos.y()
             
             # Quick bounds check
             if x < 0 or y < 0:
@@ -889,6 +946,234 @@ class PoseEditor(QMainWindow):
                 new_x, new_y
             )
             self.add_command(command)
+
+    def detect_pose_current_frame(self):
+        """Detect pose on the current frame using MediaPipe"""
+        if self.current_frame is None:
+            QMessageBox.warning(self, "No Frame", "Please load a video first.")
+            return
+        
+        try:
+            # Process the current frame
+            landmarks_list, annotated_frame = get_pose_landmarks_from_frame(self.current_frame)
+            
+            if not landmarks_list:
+                QMessageBox.warning(self, "No Pose Detected", "MediaPipe couldn't detect a pose in this frame.")
+                return
+                
+            # Update the current frame to show annotations
+            self.current_frame = annotated_frame
+            self._needs_redraw = True
+            
+            # If no pose data exists yet, create a blank DataFrame
+            if self.pose_data is None:
+                # Create a DataFrame with the right number of columns (landmarks * 2 for x,y)
+                num_landmarks = len(landmarks_list) // 2
+                column_names = []
+                landmark_names = [
+                    'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER',
+                    'RIGHT_EYE_INNER', 'RIGHT_EYE', 'RIGHT_EYE_OUTER',
+                    'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT', 'MOUTH_RIGHT',
+                    'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+                    'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY', 'RIGHT_PINKY',
+                    'LEFT_INDEX', 'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB',
+                    'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE',
+                    'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL', 'RIGHT_HEEL',
+                    'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
+                ]
+                
+                for name in landmark_names:
+                    column_names.extend([f'{name}_X', f'{name}_Y'])
+                    
+                # Create a DataFrame with empty values
+                if hasattr(self, 'cap'):
+                    num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    self.pose_data = pd.DataFrame(np.zeros((num_frames, len(column_names))), columns=column_names)
+                else:
+                    # If there's no video loaded somehow, just create a single row
+                    self.pose_data = pd.DataFrame([np.zeros(len(column_names))], columns=column_names)
+                    
+                # Update keypoint names
+                self.keypoint_names = []
+                for i in range(0, len(column_names), 2):
+                    if i+1 < len(column_names):
+                        name = column_names[i].replace('_X', '')
+                        self.keypoint_names.append(name)
+                
+                # Update keypoint dropdown
+                self.keypoint_dropdown.blockSignals(True)
+                self.keypoint_dropdown.clear()
+                self.keypoint_dropdown.addItems(self.keypoint_names)
+                self.keypoint_dropdown.blockSignals(False)
+            
+            # Update pose data for current frame
+            for i in range(0, len(landmarks_list), 2):
+                if i+1 < len(landmarks_list) and i//2 < len(self.pose_data.columns)//2:
+                    self.pose_data.iloc[self.current_frame_idx, i] = landmarks_list[i]
+                    self.pose_data.iloc[self.current_frame_idx, i+1] = landmarks_list[i+1]
+            
+            # Update current pose
+            self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+            
+            # Update display
+            self.display_frame()
+            self.update_coordinate_inputs()
+            self.update_plot()
+            
+            # Show success message
+            QMessageBox.information(self, "Detection Complete", "Pose detected successfully!")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred during pose detection: {str(e)}")
+
+    def detect_pose_video(self):
+        """Detect pose on the entire video using MediaPipe"""
+        if not hasattr(self, 'video_path') or not self.video_path:
+            QMessageBox.warning(self, "No Video", "Please load a video first.")
+            return
+        
+        try:
+            # Create progress dialog
+            progress = QProgressDialog("Processing video with MediaPipe...", "Cancel", 0, 100, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setWindowTitle("Processing Video")
+            progress.show()
+            
+            # Process the video
+            new_pose_data, success = process_video_with_mediapipe(self.video_path, progress)
+            
+            # Make sure to close the progress dialog when done
+            progress.setValue(100)  # Set to 100% to ensure it closes
+            progress.close()
+            
+            if not success:
+                if progress.wasCanceled():
+                    QMessageBox.information(self, "Canceled", "Video processing was canceled.")
+                else:
+                    QMessageBox.warning(self, "Processing Failed", "MediaPipe couldn't process the video.")
+                return
+            
+            # Update pose data
+            self.pose_data = new_pose_data
+            
+            # Update keypoint names
+            self.keypoint_names = []
+            columns = self.pose_data.columns
+            for i in range(0, len(columns), 2):
+                if i+1 < len(columns):
+                    name = columns[i].replace('_X', '')
+                    self.keypoint_names.append(name)
+            
+            # Update keypoint dropdown
+            self.keypoint_dropdown.blockSignals(True)
+            self.keypoint_dropdown.clear()
+            self.keypoint_dropdown.addItems(self.keypoint_names)
+            self.keypoint_dropdown.blockSignals(False)
+            
+            # Update current pose
+            if self.current_frame_idx < len(self.pose_data):
+                self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+            
+            # Update display
+            self._needs_redraw = True  # Force redraw
+            self.display_frame()
+            self.update_coordinate_inputs()
+            self.update_plot()
+            
+            # Show success message
+            QMessageBox.information(self, "Detection Complete", "Video processed successfully!")
+            
+        except Exception as e:
+            # Close progress dialog if it's still open during an exception
+            if 'progress' in locals() and progress is not None:
+                progress.close()
+            QMessageBox.critical(self, "Error", f"An error occurred during video processing: {str(e)}")
+
+    def rotate_video(self):
+        """Rotate the video display by 90 degrees clockwise"""
+        # Update rotation angle (0 -> 90 -> 180 -> 270 -> 0)
+        self.rotation_angle = (self.rotation_angle + 90) % 360
+        
+        # Force redraw of the frame with rotation
+        self._needs_redraw = True
+        self.display_frame()
+
+    def transform_coordinates(self, pos):
+        """Transform coordinates based on rotation angle"""
+        # If no rotation, return original position
+        if self.rotation_angle == 0:
+            return pos
+        
+        # Get original dimensions before rotation
+        if hasattr(self, 'current_frame'):
+            original_h, original_w = self.current_frame.shape[:2]
+        else:
+            # Default fallback
+            original_w = self._base_pixmap.width() if hasattr(self, '_base_pixmap') else 640
+            original_h = self._base_pixmap.height() if hasattr(self, '_base_pixmap') else 480
+        
+        x, y = pos.x(), pos.y()
+        
+        # Apply inverse transformation based on rotation angle
+        if self.rotation_angle == 90:  # 90° clockwise rotation
+            # For 90° clockwise: new_x = y, new_y = width - x
+            new_x = y
+            new_y = original_w - x
+        elif self.rotation_angle == 180:  # 180° rotation
+            # For 180°: new_x = width - x, new_y = height - y
+            new_x = original_w - x
+            new_y = original_h - y
+        elif self.rotation_angle == 270:  # 270° clockwise (90° counterclockwise)
+            # For 270° clockwise: new_x = height - y, new_y = x
+            new_x = original_h - y
+            new_y = x
+        else:
+            # This shouldn't happen, but just in case
+            new_x, new_y = x, y
+        
+        return QPoint(int(new_x), int(new_y))
+
+    def rotate_pose_data(self):
+        """Rotate the actual pose data by 90 degrees clockwise"""
+        if self.pose_data is None or self.current_frame is None:
+            QMessageBox.warning(self, "No Pose Data", "Please load a video and detect poses first.")
+            return
+        
+        try:
+            # Get frame dimensions
+            h, w = self.current_frame.shape[:2]
+            
+            # Make a backup for undo functionality
+            old_data = self.pose_data.copy()
+            
+            # Rotate all keypoints in all frames
+            for frame_idx in range(len(self.pose_data)):
+                frame_pose = self.pose_data.iloc[frame_idx].values.reshape(-1, 2)
+                
+                for point_idx in range(len(frame_pose)):
+                    x, y = frame_pose[point_idx]
+                    
+                    # 90° clockwise rotation: new_x = y, new_y = width - x
+                    new_x = y
+                    new_y = w - x
+                    
+                    # Update data
+                    self.pose_data.iloc[frame_idx, point_idx * 2] = new_x
+                    self.pose_data.iloc[frame_idx, point_idx * 2 + 1] = new_y
+            
+            # Update current pose
+            self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+            
+            # Force redraw
+            self._needs_redraw = True
+            self.display_frame()
+            self.update_coordinate_inputs()
+            self.update_plot()
+            
+            QMessageBox.information(self, "Rotation Complete", "Pose data rotated 90° clockwise.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred during pose rotation: {str(e)}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
