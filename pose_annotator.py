@@ -281,12 +281,17 @@ class PoseEditor(QMainWindow):
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
                     
-                if self.pose_data is not None:
-                    self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
-                    for i, point in enumerate(self.current_pose):
-                        radius = 8 if i == self.selected_point else 5
-                        color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
-                        cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+                if self.pose_data is not None and self.current_frame_idx < len(self.pose_data):
+                    try:
+                        self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+                        for i, point in enumerate(self.current_pose):
+                            radius = 8 if i == self.selected_point else 5
+                            color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
+                            cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+                    except IndexError:
+                        self.current_pose = None
+                else:
+                    self.current_pose = None
 
                 # Convert to QPixmap only when necessary
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -330,32 +335,109 @@ class PoseEditor(QMainWindow):
                 # Load the pose data
                 self.pose_data = pd.read_csv(pose_path)
                 
-                # Verify the data format
-                if len(self.pose_data.columns) % 2 != 0:
-                    raise ValueError("Invalid pose data format: Number of columns must be even")
-                    
-                # Update keypoint names safely
+                # Fill empty/NaN values with zeros
+                self.pose_data = self.pose_data.fillna(0)
+                
+                # Get all columns
                 columns = self.pose_data.columns
+                processed_columns = []
                 self.keypoint_names = []
-                for i in range(0, len(columns), 2):
-                    if i+1 < len(columns):
-                        name = columns[i].replace('_x', '')
-                        self.keypoint_names.append(name)
                 
-                # Update keypoint dropdown
-                self.keypoint_dropdown.blockSignals(True)  # Block signals temporarily
-                self.keypoint_dropdown.clear()
-                self.keypoint_dropdown.addItems(self.keypoint_names)
-                self.keypoint_dropdown.blockSignals(False)  # Unblock signals
+                # First look for columns ending with _x to identify keypoints
+                x_columns = [col for col in columns if col.lower().endswith('_x')]
                 
-                # Reset selection
-                self.selected_point = None
+                if x_columns:
+                    print(f"Found {len(x_columns)} keypoints with _x suffix")
+                    
+                    # For each x column, find the corresponding y column
+                    for x_col in x_columns:
+                        base_name = x_col[:-2]  # Remove '_x'
+                        y_col = f"{base_name}_y" 
+                        
+                        if y_col in columns:
+                            self.keypoint_names.append(base_name)
+                            processed_columns.append(x_col)
+                            processed_columns.append(y_col)
                 
-                # Update display
-                if hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
-                    self.update_frame()
+                # If no keypoints found with _x suffix, try x_ prefix
+                if not processed_columns:
+                    x_columns = [col for col in columns if col.lower().startswith('x_')]
+                    
+                    if x_columns:
+                        print(f"Found {len(x_columns)} keypoints with x_ prefix")
+                        
+                        for x_col in x_columns:
+                            base_name = x_col[2:]  # Remove 'x_'
+                            y_col = f"y_{base_name}"
+                            
+                            if y_col in columns:
+                                self.keypoint_names.append(base_name)
+                                processed_columns.append(x_col)
+                                processed_columns.append(y_col)
+                
+                # If still no keypoints found, assume columns come in pairs (even/odd)
+                if not processed_columns:
+                    print("No standard naming pattern found, assuming pairs of columns")
+                    
+                    # Skip every third column if it looks like a triplet format (x,y,conf)
+                    # Check if number of columns is divisible by 3 and the third column looks like conf/z
+                    if len(columns) % 3 == 0:
+                        # Check a sample of third columns to see if they contain conf/z keywords
+                        third_cols = [columns[i] for i in range(2, len(columns), 3)]
+                        conf_indicators = ['conf', 'score', 'z', 'vis', 'visibility']
+                        
+                        if any(any(indicator in col.lower() for indicator in conf_indicators) for col in third_cols):
+                            print("Detected triplet format with confidence/z values")
+                            # Use only the first two columns of each triplet
+                            for i in range(0, len(columns), 3):
+                                if i+1 < len(columns):
+                                    self.keypoint_names.append(f"keypoint{i//3+1}")
+                                    processed_columns.append(columns[i])  # x column
+                                    processed_columns.append(columns[i+1])  # y column
+                        else:
+                            # Just use pairs of columns
+                            for i in range(0, len(columns), 2):
+                                if i+1 < len(columns):
+                                    self.keypoint_names.append(f"keypoint{i//2+1}")
+                                    processed_columns.append(columns[i])
+                                    processed_columns.append(columns[i+1])
+                    else:
+                        # Just use pairs of columns
+                        for i in range(0, len(columns), 2):
+                            if i+1 < len(columns):
+                                self.keypoint_names.append(f"keypoint{i//2+1}")
+                                processed_columns.append(columns[i])
+                                processed_columns.append(columns[i+1])
+                
+                # Extract only the processed columns
+                if processed_columns:
+                    self.pose_data = self.pose_data[processed_columns]
+                
+                    # Round all values to integers for consistent display
+                    numeric_columns = self.pose_data.select_dtypes(include=['float64', 'int64']).columns
+                    self.pose_data[numeric_columns] = self.pose_data[numeric_columns].round().astype(int)
+                    
+                    # Update keypoint dropdown
+                    self.keypoint_dropdown.blockSignals(True)
+                    self.keypoint_dropdown.clear()
+                    self.keypoint_dropdown.addItems(self.keypoint_names)
+                    self.keypoint_dropdown.blockSignals(False)
+                    
+                    # Reset selection
+                    self.selected_point = None
+                    
+                    # Update display
+                    if hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
+                        self.update_frame()
+                    
+                    print(f"Loaded pose data with {len(self.keypoint_names)} keypoints")
+                else:
+                    print("Error: Could not identify keypoint columns in the CSV")
 
             except Exception as e:
+                print(f"Error loading pose data: {e}")
+                import traceback
+                traceback.print_exc()
                 self.pose_data = None
                 self.keypoint_names = []
                 self.keypoint_dropdown.clear()
@@ -366,6 +448,11 @@ class PoseEditor(QMainWindow):
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
             ret, frame = self.cap.read()
             if ret:
+                # Ensure frame has the correct orientation - sometimes needed for certain video files
+                # This explicitly ignores any rotation metadata and uses the raw frame data
+                if frame.shape[0] > 0 and frame.shape[1] > 0:
+                    frame = frame.copy()  # Work with a copy to avoid any reference issues
+                
                 # Update the current frame
                 self.current_frame = frame
                 self.frame_counter.setText(f"Frame: {self.current_frame_idx}/{self.frame_slider.maximum()}")
@@ -375,12 +462,25 @@ class PoseEditor(QMainWindow):
                 
                 # Update the display
                 self.display_frame()
+                
+                # Only update pose data if it exists for this frame
+                if self.pose_data is not None and self.current_frame_idx < len(self.pose_data):
+                    try:
+                        # Update current pose data
+                        self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+                    except IndexError:
+                        self.current_pose = None
+                else:
+                    self.current_pose = None
+                    
                 self.update_coordinate_inputs()
                 
                 # Only update plot if not in the middle of a playback
                 if not self.playing:
                     self.update_plot()
             else:
+                # Handle frame read failure
+                print(f"Failed to read frame {self.current_frame_idx}")
                 self.frame_counter.setText(f"Frame: {self.current_frame_idx}/{self.frame_slider.maximum()}")
 
     def load_video(self):
@@ -389,6 +489,11 @@ class PoseEditor(QMainWindow):
         self.video_path, _ = QFileDialog.getOpenFileName(self, "Open Video")
         if self.video_path:
             self.cap = cv2.VideoCapture(self.video_path)
+            
+            # Force the video to maintain its default orientation
+            # CV_CAP_PROP_ORIENTATION_AUTO = 49
+            self.cap.set(49, 0)  # Disable auto-orientation
+            
             total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
             self.frame_slider.setMaximum(total_frames - 1)
             self.current_frame_idx = 0
@@ -396,10 +501,11 @@ class PoseEditor(QMainWindow):
             height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             
             if width <= 0 or height <= 0:
+                print("Error: Could not determine video dimensions")
                 self.cap.release()
                 self.cap = None
                 return
-                
+            
             # Calculate aspect ratio and set fixed size for label
             aspect_ratio = width / height
             label_height = 480  # Fixed height
@@ -423,6 +529,10 @@ class PoseEditor(QMainWindow):
             if fps > 0:
                 self.play_speed = fps
             
+            print(f"Loaded video: {self.video_path}")
+            print(f"Dimensions: {width}x{height}, Total frames: {total_frames}, FPS: {fps}")
+            
+            # Read the first frame to ensure correct orientation
             self.update_frame()
     
     
@@ -605,14 +715,20 @@ class PoseEditor(QMainWindow):
                     frame_preview = cv2.cvtColor(frame_preview, cv2.COLOR_GRAY2RGB)
                 
                 # Add keypoints with simplified rendering
-                if self.pose_data is not None:
-                    # Update current pose data for this frame
-                    self.current_pose = self.pose_data.iloc[frame_idx].values.reshape(-1, 2)
-                    
-                    # Draw simplified keypoints (faster)
-                    for i, point in enumerate(self.current_pose):
-                        # Use uniform color and size during dragging for speed
-                        cv2.circle(frame_preview, (int(point[0]), int(point[1])), 5, (0, 255, 0), -1)
+                if self.pose_data is not None and frame_idx < len(self.pose_data):
+                    try:
+                        # Update current pose data for this frame
+                        self.current_pose = self.pose_data.iloc[frame_idx].values.reshape(-1, 2)
+                        
+                        # Draw simplified keypoints (faster)
+                        for i, point in enumerate(self.current_pose):
+                            # Use uniform color and size during dragging for speed
+                            cv2.circle(frame_preview, (int(point[0]), int(point[1])), 5, (0, 255, 0), -1)
+                    except IndexError:
+                        # Handle the case where frame_idx is out of bounds for pose data
+                        self.current_pose = None
+                else:
+                    self.current_pose = None
                 
                 # Convert to QPixmap with fast transformation
                 frame_rgb = cv2.cvtColor(frame_preview, cv2.COLOR_BGR2RGB)
