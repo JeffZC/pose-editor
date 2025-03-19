@@ -283,14 +283,14 @@ class PoseEditor(QMainWindow):
         self.pose_options_layout = QVBoxLayout()
 
         # Add Load Pose button at the top
-        self.load_pose_button = QPushButton("Load Pose")
+        self.load_pose_button = QPushButton("Load Pose (from csv)")
         self.load_pose_button.clicked.connect(self.load_pose)
         self.pose_options_layout.addWidget(self.load_pose_button)
 
         # Add pose detection buttons
-        self.detect_current_frame_button = QPushButton("Detect Current Frame")
+        self.detect_current_frame_button = QPushButton("Run Pose Current Frame")
         self.detect_current_frame_button.clicked.connect(self.detect_pose_current_frame)
-        self.detect_video_button = QPushButton("Detect Entire Video")
+        self.detect_video_button = QPushButton("Run Pose Entire Video")
         self.detect_video_button.clicked.connect(self.detect_pose_video)
 
         # Add widgets to layout
@@ -298,7 +298,7 @@ class PoseEditor(QMainWindow):
         self.pose_options_layout.addWidget(self.detect_video_button)
 
         # Add Save Pose button at the bottom
-        self.save_button = QPushButton("Save Poses")
+        self.save_button = QPushButton("Save Poses (to csv)")
         self.save_button.clicked.connect(self.save_pose)
         self.pose_options_layout.addWidget(self.save_button)
 
