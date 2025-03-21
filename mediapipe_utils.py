@@ -2,8 +2,7 @@ import cv2
 import mediapipe as mp
 import pandas as pd
 import numpy as np
-from PyQt5.QtWidgets import QProgressDialog
-from PyQt5.QtCore import Qt
+from pose_format_utils import process_mediapipe_to_rr21, SUPPORTED_FORMATS
 
 # Initialize MediaPipe Pose
 mp_pose = mp.solutions.pose
@@ -12,153 +11,132 @@ mp_drawing_styles = mp.solutions.drawing_styles
 
 def get_pose_landmarks_from_frame(frame):
     """
-    Extract pose landmarks from a single frame.
+    Detect pose landmarks for a single frame using MediaPipe
     
     Args:
-        frame: BGR image
+        frame: OpenCV frame (BGR)
     
     Returns:
-        landmarks_list: List of landmarks in pixel coordinates [x1, y1, x2, y2, ...]
-        annotated_frame: Frame with landmarks visualized
+        tuple: (landmarks_list as flat [x1,y1,x2,y2...], annotated_frame)
     """
-    # Convert the BGR image to RGB
-    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    
-    # Initialize pose detector for a single frame
     with mp_pose.Pose(
         static_image_mode=True,
-        model_complexity=1,
+        model_complexity=2,
         enable_segmentation=False,
-        min_detection_confidence=0.5
-    ) as pose:
-        # Process the image
-        results = pose.process(image_rgb)
+        min_detection_confidence=0.5) as pose:
         
-        # Prepare output
+        # Convert to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Process frame
+        results = pose.process(frame_rgb)
+        
+        if not results.pose_landmarks:
+            return [], frame
+        
+        # Create a copy for annotations
+        annotated_frame = frame.copy()
+        
+        # Draw the pose annotation on the image.
+        mp_drawing.draw_landmarks(
+            annotated_frame,
+            results.pose_landmarks,
+            mp_pose.POSE_CONNECTIONS,
+            landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style())
+        
+        # Extract landmarks as flat list [x1,y1,x2,y2...]
         landmarks_list = []
-        annotated_image = frame.copy()
+        h, w, _ = frame.shape
+        for landmark in results.pose_landmarks.landmark:
+            # Normalize coordinates to image dimensions
+            landmarks_list.append(landmark.x * w)
+            landmarks_list.append(landmark.y * h)
         
-        if results.pose_landmarks:
-            # Draw pose landmarks
-            mp_drawing.draw_landmarks(
-                annotated_image,
-                results.pose_landmarks,
-                mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
-            )
-            
-            # Get frame dimensions
-            height, width, _ = frame.shape
-            
-            # Extract landmarks
-            for landmark in results.pose_landmarks.landmark:
-                # Convert normalized coordinates to pixel coordinates
-                x_px = int(landmark.x * width)
-                y_px = int(landmark.y * height)
-                landmarks_list.extend([x_px, y_px])
-                
-    return landmarks_list, annotated_image
+        return landmarks_list, annotated_frame
 
 def process_video_with_mediapipe(video_path, progress_dialog=None):
     """
-    Process a video with MediaPipe pose detection.
+    Process an entire video with MediaPipe pose detection
     
     Args:
         video_path: Path to the video file
-        progress_dialog: QProgressDialog for showing progress (optional)
+        progress_dialog: Optional PyQt progress dialog
     
     Returns:
-        pose_data: DataFrame containing pose data for all frames
-        success: Boolean indicating if processing was successful
+        tuple: (DataFrame with pose data in RR21 format, success flag)
     """
-    cap = cv2.VideoCapture(video_path)
-    
-    if not cap.isOpened():
-        return None, False
-    
-    # Get video properties
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    # Initialize pose detector for video
-    with mp_pose.Pose(
-        static_image_mode=False,
-        model_complexity=1,
-        smooth_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    ) as pose:
+    try:
+        # Open video file
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None, False
         
-        all_landmarks = []
+        # Get video properties
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
         
-        # Update progress dialog if provided
-        if progress_dialog:
-            progress_dialog.setMaximum(total_frames)
-        
-        frame_idx = 0
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
+        # Initialize pose detector
+        with mp_pose.Pose(
+            static_image_mode=False,
+            model_complexity=1,
+            smooth_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5) as pose:
+            
+            # Create empty DataFrame for RR21 format
+            column_names = []
+            for name in SUPPORTED_FORMATS["rr21"]:
+                column_names.extend([f'{name}_X', f'{name}_Y'])
+            
+            # Initialize with zeros
+            pose_data = pd.DataFrame(np.zeros((frame_count, len(column_names))), columns=column_names)
+            
+            # Process frames
+            frame_idx = 0
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
                 
-            # Update progress
-            if progress_dialog:
-                # Check if canceled
-                if progress_dialog.wasCanceled():
-                    cap.release()
-                    return None, False
-                progress_dialog.setValue(frame_idx)
-            
-            # Convert the BGR image to RGB
-            image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Process the frame
-            results = pose.process(image_rgb)
-            
-            # Extract and store landmarks
-            frame_landmarks = []
-            
-            if results.pose_landmarks:
-                for landmark in results.pose_landmarks.landmark:
-                    # Convert normalized coordinates to pixel coordinates
-                    x_px = int(landmark.x * width)
-                    y_px = int(landmark.y * height)
-                    frame_landmarks.extend([x_px, y_px])
+                # Update progress
+                if progress_dialog is not None:
+                    progress_percent = min(100, int((frame_idx / frame_count) * 100))
+                    progress_dialog.setValue(progress_percent)
                     
-            else:
-                # If no landmarks detected, fill with zeros or NaN
-                frame_landmarks = [0] * 33 * 2  # 33 landmarks, each with x and y
+                    # Handle cancel button
+                    if progress_dialog.wasCanceled():
+                        break
+                
+                # Process frame
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = pose.process(frame_rgb)
+                
+                # Extract landmarks if detected
+                if results.pose_landmarks:
+                    landmarks_list = []
+                    h, w, _ = frame.shape
+                    for landmark in results.pose_landmarks.landmark:
+                        landmarks_list.append(landmark.x * w)
+                        landmarks_list.append(landmark.y * h)
+                    
+                    # Convert to RR21 format
+                    rr21_landmarks = process_mediapipe_to_rr21(landmarks_list)
+                    
+                    # Update data
+                    for i in range(0, len(rr21_landmarks), 2):
+                        if i+1 < len(rr21_landmarks) and i//2 < len(column_names)//2:
+                            pose_data.iloc[frame_idx, i] = rr21_landmarks[i]
+                            pose_data.iloc[frame_idx, i+1] = rr21_landmarks[i+1]
+                
+                frame_idx += 1
             
-            all_landmarks.append(frame_landmarks)
-            frame_idx += 1
-    
-    cap.release()
-    
-    # Create a DataFrame from the landmarks
-    pose_data = pd.DataFrame(all_landmarks)
-    
-    # Generate column names
-    landmark_names = [
-        'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER',
-        'RIGHT_EYE_INNER', 'RIGHT_EYE', 'RIGHT_EYE_OUTER',
-        'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT', 'MOUTH_RIGHT',
-        'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-        'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY', 'RIGHT_PINKY',
-        'LEFT_INDEX', 'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB',
-        'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE',
-        'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL', 'RIGHT_HEEL',
-        'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-    ]
-    
-    # Create column names in format NOSE_X, NOSE_Y, etc.
-    column_names = []
-    for name in landmark_names:
-        column_names.extend([f'{name}_X', f'{name}_Y'])
-    
-    # Set column names if dimensions match
-    if len(column_names) == pose_data.shape[1]:
-        pose_data.columns = column_names
-    
-    return pose_data, True
+            # Clean up
+            cap.release()
+            
+            return pose_data, True
+            
+    except Exception as e:
+        print(f"Error processing video: {e}")
+        if 'cap' in locals() and cap is not None:
+            cap.release()
+        return None, False
