@@ -80,6 +80,53 @@ class KeypointCommand:
         self.editor.display_frame()
         self.editor.update_plot()
 
+# New command class for MediaPipe pose detection
+class MediaPipeDetectionCommand:
+    def __init__(self, editor, frame_idx, old_pose_data, new_pose_data):
+        self.editor = editor
+        self.frame_idx = frame_idx
+        self.old_pose_data = old_pose_data.copy() if old_pose_data is not None else None
+        self.new_pose_data = new_pose_data.copy()
+        
+    def undo(self):
+        """Restore the previous state"""
+        # Check if we need to change frames
+        if self.frame_idx != self.editor.current_frame_idx:
+            self.editor.current_frame_idx = self.frame_idx
+            self.editor.frame_slider.setValue(self.frame_idx)
+        
+        # Restore old pose data for the current frame
+        if self.old_pose_data is not None:
+            self.editor.pose_data.iloc[self.frame_idx] = self.old_pose_data
+        
+        # Update current pose
+        self.editor.current_pose = self.editor.pose_data.iloc[self.frame_idx].values.reshape(-1, 2)
+        
+        # Update UI
+        self.editor._needs_redraw = True
+        self.editor.update_coordinate_inputs()
+        self.editor.display_frame()
+        self.editor.update_plot()
+        
+    def redo(self):
+        """Apply the change again"""
+        # Check if we need to change frames
+        if self.frame_idx != self.editor.current_frame_idx:
+            self.editor.current_frame_idx = self.frame_idx
+            self.editor.frame_slider.setValue(self.frame_idx)
+        
+        # Apply new pose data for the current frame
+        self.editor.pose_data.iloc[self.frame_idx] = self.new_pose_data
+        
+        # Update current pose
+        self.editor.current_pose = self.editor.pose_data.iloc[self.frame_idx].values.reshape(-1, 2)
+        
+        # Update UI
+        self.editor._needs_redraw = True
+        self.editor.update_coordinate_inputs()
+        self.editor.display_frame()
+        self.editor.update_plot()
+
 class PoseEditor(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -180,12 +227,14 @@ class PoseEditor(QMainWindow):
         self.next_frame_button.setFixedWidth(25)
         self.next_frame_button.clicked.connect(self.next_frame)
         self.frame_counter = QLabel("Frame: 0/0")
-    
+        self.zoom_label = QLabel("Zoom: 100%")  # Move zoom label definition here
+
         self.nav_controls.addWidget(self.play_button)
         self.nav_controls.addWidget(self.prev_frame_button)
         self.nav_controls.addWidget(self.frame_slider)
         self.nav_controls.addWidget(self.next_frame_button)
         self.nav_controls.addWidget(self.frame_counter)
+        self.nav_controls.addWidget(self.zoom_label)  # Add zoom label to navigation controls
         left_layout.addLayout(self.nav_controls)
     
         # Create right panel for zoom controls
@@ -222,8 +271,6 @@ class PoseEditor(QMainWindow):
 
         # Add the zoom controls horizontal layout to the vertical layout
         self.video_control_layout.addLayout(self.zoom_controls)
-        self.zoom_label = QLabel("Zoom: 100%")
-        self.video_control_layout.addWidget(self.zoom_label)
         self.video_control_group_box.setLayout(self.video_control_layout)
         right_layout.addWidget(self.video_control_group_box)
     
@@ -1024,6 +1071,11 @@ class PoseEditor(QMainWindow):
             # Convert MediaPipe landmarks to RR21 format
             rr21_landmarks = process_mediapipe_to_rr21(landmarks_list)
             
+            # Store old pose data for undo functionality
+            old_pose_data = None
+            if self.pose_data is not None and self.current_frame_idx < len(self.pose_data):
+                old_pose_data = self.pose_data.iloc[self.current_frame_idx].copy()
+            
             # If no pose data exists yet, create a blank DataFrame
             if self.pose_data is None:
                 # Create column names for RR21 format
@@ -1057,6 +1109,11 @@ class PoseEditor(QMainWindow):
                 if i+1 < len(rr21_landmarks) and i//2 < len(self.pose_data.columns)//2:
                     self.pose_data.iloc[self.current_frame_idx, i] = rr21_landmarks[i]
                     self.pose_data.iloc[self.current_frame_idx, i+1] = rr21_landmarks[i+1]
+            
+            # Create and add command for undo/redo
+            new_pose_data = self.pose_data.iloc[self.current_frame_idx].copy()
+            command = MediaPipeDetectionCommand(self, self.current_frame_idx, old_pose_data, new_pose_data)
+            self.add_command(command)
             
             # Update current pose
             self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
