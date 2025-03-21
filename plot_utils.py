@@ -17,9 +17,9 @@ class KeypointPlot(FigureCanvasQTAgg):
         self.axes_y = self.fig.add_subplot(212)  # Y coordinate plot
         
         # Set up plots
-        self.axes_x.set_ylabel('X Position')
-        self.axes_y.set_ylabel('Y Position')
-        self.axes_y.set_xlabel('Frame')
+        self.axes_x.set_ylabel('X Coord')
+        self.axes_y.set_ylabel('Y Coord')
+        self.axes_y.set_xlabel('Frame Number')
         
         # Hide x labels on top plot
         self.axes_x.set_xticklabels([])
@@ -39,10 +39,7 @@ class KeypointPlot(FigureCanvasQTAgg):
         # Set cursor to pointing hand to indicate clickable area
         self.setCursor(Qt.PointingHandCursor)
         
-        # Add help annotation
-        self.help_text = self.fig.text(0.5, 0.98, "Click on plot to navigate to frame", 
-                                     ha='center', fontsize=8, color='gray', 
-                                     bbox=dict(boxstyle='round', fc='white', alpha=0.8))
+        # Help text removed
         
         super(KeypointPlot, self).__init__(self.fig)
         self.setMinimumHeight(200)  # Set minimum height for the plot
@@ -151,9 +148,9 @@ class KeypointPlot(FigureCanvasQTAgg):
             self.axes_y.clear()
             
             # Set up axes
-            self.axes_x.set_ylabel('X Position')
-            self.axes_y.set_ylabel('Y Position')
-            self.axes_y.set_xlabel('Frame')
+            self.axes_x.set_ylabel('X Coord')
+            self.axes_y.set_ylabel('Y Coord')
+            self.axes_y.set_xlabel('Frame Number')
             
             # Hide x labels on top plot
             self.axes_x.set_xticklabels([])
@@ -229,9 +226,9 @@ class KeypointPlot(FigureCanvasQTAgg):
         """Clear the plot"""
         self.axes_x.clear()
         self.axes_y.clear()
-        self.axes_x.set_ylabel('X Position')
-        self.axes_y.set_ylabel('Y Position')
-        self.axes_y.set_xlabel('Frame')
+        self.axes_x.set_ylabel('X Coord')
+        self.axes_y.set_ylabel('Y Coord')
+        self.axes_y.set_xlabel('Frame Number')
         self.axes_x.set_xticklabels([])
         self.fig.tight_layout()
         self.draw()
