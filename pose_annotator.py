@@ -5,12 +5,13 @@ import numpy as np
 import time
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, 
                            QVBoxLayout, QWidget, QFileDialog, QHBoxLayout, QSlider,
-                           QScrollArea, QGroupBox, QComboBox, QLineEdit, QShortcut)
+                           QScrollArea, QGroupBox, QComboBox, QLineEdit)
 from PyQt5.QtCore import Qt, QPoint, QSize, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QCursor, QIcon, QKeySequence
 from plot_utils import create_plot_widget
 from mediapipe_utils import get_pose_landmarks_from_frame, process_video_with_mediapipe
 from PyQt5.QtWidgets import QProgressDialog, QMessageBox
+from pose_format_utils import load_pose_data, save_pose_data, SUPPORTED_FORMATS, process_mediapipe_to_rr21
 
 # Command class for undo/redo operations
 class KeypointCommand:
@@ -150,6 +151,8 @@ class PoseEditor(QMainWindow):
     
         # Add plot widget
         self.plot_widget, self.keypoint_plot = create_plot_widget()
+        # Connect plot click callback
+        self.keypoint_plot.frame_callback = self.set_frame_from_plot
         left_layout.addWidget(self.plot_widget)
     
         # Create navigation controls with play/pause
@@ -383,41 +386,81 @@ class PoseEditor(QMainWindow):
             self.y_coord_input.clear()
 
     def load_pose(self):
-        pose_path, _ = QFileDialog.getOpenFileName(self, "Open Pose CSV")
-        if pose_path:
-            try:
-                # Load the pose data
-                self.pose_data = pd.read_csv(pose_path)
-                
-                # Verify the data format
-                if len(self.pose_data.columns) % 2 != 0:
-                    raise ValueError("Invalid pose data format: Number of columns must be even")
-                    
-                # Update keypoint names safely
-                columns = self.pose_data.columns
-                self.keypoint_names = []
-                for i in range(0, len(columns), 2):
-                    if i+1 < len(columns):
-                        name = columns[i].replace('_x', '')
-                        self.keypoint_names.append(name)
-                
-                # Update keypoint dropdown
-                self.keypoint_dropdown.blockSignals(True)  # Block signals temporarily
-                self.keypoint_dropdown.clear()
-                self.keypoint_dropdown.addItems(self.keypoint_names)
-                self.keypoint_dropdown.blockSignals(False)  # Unblock signals
-                
-                # Reset selection
-                self.selected_point = None
-                
-                # Update display
-                if hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
-                    self.update_frame()
-
-            except Exception as e:
-                self.pose_data = None
-                self.keypoint_names = []
-                self.keypoint_dropdown.clear()
+        pose_path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Open Pose Data", 
+            "", 
+            "Pose Files (*.csv *.json);;CSV Files (*.csv);;JSON Files (*.json)"
+        )
+        
+        if not pose_path:
+            return
+            
+        # Get expected frame count if video is loaded
+        expected_frame_count = None
+        if hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
+            expected_frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # First try to load without forcing
+        pose_data, format_name, keypoint_names, success, message = load_pose_data(
+            pose_path, 
+            expected_frame_count=expected_frame_count,
+            force_import=False
+        )
+        
+        # If frame count mismatch, ask user if they want to force import
+        if not success and "Frame count mismatch" in message and expected_frame_count is not None:
+            reply = QMessageBox.question(
+                self, 
+                "Frame Count Mismatch", 
+                f"{message}\n\nDo you want to force import? If yes, the pose data will be adjusted to match the video frame count.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                # Try again with force import
+                pose_data, format_name, keypoint_names, success, message = load_pose_data(
+                    pose_path, 
+                    expected_frame_count=expected_frame_count,
+                    force_import=True
+                )
+        
+        # Handle other errors
+        if not success:
+            QMessageBox.warning(self, "Load Failed", message)
+            return
+        
+        # Clean NaN values - replace them with 0
+        pose_data = pose_data.fillna(0)
+        
+        # Update pose data
+        self.pose_data = pose_data
+        self.pose_format = "rr21"  # Always use RR21 internally
+        self.original_format = format_name
+        
+        # Update keypoint names
+        self.keypoint_names = keypoint_names
+        
+        # Update keypoint dropdown
+        self.keypoint_dropdown.blockSignals(True)
+        self.keypoint_dropdown.clear()
+        self.keypoint_dropdown.addItems(self.keypoint_names)
+        self.keypoint_dropdown.blockSignals(False)
+        
+        # Reset selection
+        self.selected_point = None
+        
+        # Update display
+        if hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
+            self.update_frame()
+            
+        # Show information about loaded data
+        QMessageBox.information(
+            self, 
+            "Pose Data Loaded", 
+            f"Loaded {len(self.pose_data)} frames of {format_name} format pose data (converted to RR21) with {len(self.keypoint_names)} keypoints."
+        )
 
     def update_frame(self):
         if hasattr(self, 'cap') and self.cap:
@@ -627,10 +670,17 @@ class PoseEditor(QMainWindow):
                 self, 
                 "Save Pose Data", 
                 "", 
-                "CSV Files (*.csv)"
+                "CSV Files (*.csv);;JSON Files (*.json)"
             )
             if file_path:
-                self.pose_data.to_csv(file_path, index=False)
+                if save_pose_data(self.pose_data, file_path, "rr21"):
+                    QMessageBox.information(
+                        self, 
+                        "Save Successful", 
+                        "Pose data saved successfully in RR21 format."
+                    )
+                else:
+                    QMessageBox.warning(self, "Save Failed", "Failed to save pose data.")
 
     def on_frame_change(self, value):
         # Always update the frame counter text
@@ -971,24 +1021,14 @@ class PoseEditor(QMainWindow):
             self.current_frame = annotated_frame
             self._needs_redraw = True
             
+            # Convert MediaPipe landmarks to RR21 format
+            rr21_landmarks = process_mediapipe_to_rr21(landmarks_list)
+            
             # If no pose data exists yet, create a blank DataFrame
             if self.pose_data is None:
-                # Create a DataFrame with the right number of columns (landmarks * 2 for x,y)
-                num_landmarks = len(landmarks_list) // 2
+                # Create column names for RR21 format
                 column_names = []
-                landmark_names = [
-                    'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER',
-                    'RIGHT_EYE_INNER', 'RIGHT_EYE', 'RIGHT_EYE_OUTER',
-                    'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT', 'MOUTH_RIGHT',
-                    'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                    'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY', 'RIGHT_PINKY',
-                    'LEFT_INDEX', 'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB',
-                    'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE',
-                    'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL', 'RIGHT_HEEL',
-                    'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-                ]
-                
-                for name in landmark_names:
+                for name in SUPPORTED_FORMATS["rr21"]:
                     column_names.extend([f'{name}_X', f'{name}_Y'])
                     
                 # Create a DataFrame with empty values
@@ -1000,23 +1040,23 @@ class PoseEditor(QMainWindow):
                     self.pose_data = pd.DataFrame([np.zeros(len(column_names))], columns=column_names)
                     
                 # Update keypoint names
-                self.keypoint_names = []
-                for i in range(0, len(column_names), 2):
-                    if i+1 < len(column_names):
-                        name = column_names[i].replace('_X', '')
-                        self.keypoint_names.append(name)
+                self.keypoint_names = SUPPORTED_FORMATS["rr21"]
                 
                 # Update keypoint dropdown
                 self.keypoint_dropdown.blockSignals(True)
                 self.keypoint_dropdown.clear()
                 self.keypoint_dropdown.addItems(self.keypoint_names)
                 self.keypoint_dropdown.blockSignals(False)
+                
+                # Set format information
+                self.original_format = "mediapipe33"
+                self.pose_format = "rr21"
             
-            # Update pose data for current frame
-            for i in range(0, len(landmarks_list), 2):
-                if i+1 < len(landmarks_list) and i//2 < len(self.pose_data.columns)//2:
-                    self.pose_data.iloc[self.current_frame_idx, i] = landmarks_list[i]
-                    self.pose_data.iloc[self.current_frame_idx, i+1] = landmarks_list[i+1]
+            # Update pose data for current frame with RR21 landmarks
+            for i in range(0, len(rr21_landmarks), 2):
+                if i+1 < len(rr21_landmarks) and i//2 < len(self.pose_data.columns)//2:
+                    self.pose_data.iloc[self.current_frame_idx, i] = rr21_landmarks[i]
+                    self.pose_data.iloc[self.current_frame_idx, i+1] = rr21_landmarks[i+1]
             
             # Update current pose
             self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
@@ -1027,7 +1067,7 @@ class PoseEditor(QMainWindow):
             self.update_plot()
             
             # Show success message
-            QMessageBox.information(self, "Detection Complete", "Pose detected successfully!")
+            QMessageBox.information(self, "Detection Complete", "Pose detected and converted to RR21 format successfully!")
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"An error occurred during pose detection: {str(e)}")
@@ -1180,6 +1220,31 @@ class PoseEditor(QMainWindow):
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"An error occurred during pose rotation: {str(e)}")
+
+    def set_frame_from_plot(self, frame_idx):
+        """Navigate to a specific frame when the user clicks on the plot"""
+        if hasattr(self, 'cap') and self.cap:
+            # Make sure the frame is within valid range
+            frame_idx = max(0, min(frame_idx, self.frame_slider.maximum()))
+            
+            # If playback is active, pause it
+            if self.playing:
+                self.pause_playback()
+            
+            # Temporarily disable the plot click to avoid multiple rapid clicks
+            self.keypoint_plot.click_enabled = False
+            
+            # Update frame index and slider
+            self.current_frame_idx = frame_idx
+            self.frame_slider.setValue(frame_idx)
+            
+            # Visual feedback - make the slider flash briefly to indicate the new position
+            original_style = self.frame_slider.styleSheet()
+            self.frame_slider.setStyleSheet("QSlider::handle:horizontal { background-color: #ff5555; }")
+            QTimer.singleShot(300, lambda: self.frame_slider.setStyleSheet(original_style))
+            
+            # Re-enable plot clicks after a short delay
+            QTimer.singleShot(300, lambda: setattr(self.keypoint_plot, 'click_enabled', True))
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
