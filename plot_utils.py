@@ -113,12 +113,12 @@ class KeypointPlot(FigureCanvasQTAgg):
         """Remove the hover indicator line"""
         if self.hover_line is not None:
             for line in self.hover_line:
-                line.remove()
+                line.set_visible(False)  # Use set_visible instead of remove
             self.hover_line = None
             
         if hasattr(self, 'hover_text') and self.hover_text is not None:
             for text in self.hover_text:
-                text.remove()
+                text.set_visible(False)  # Use set_visible instead of remove
             self.hover_text = None
     
     def draw_vertical_indicator(self, frame_idx, color='red', linestyle='--', alpha=0.5):
