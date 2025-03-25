@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton,
                            QScrollArea, QGroupBox, QComboBox, QLineEdit)
 from PyQt5.QtCore import Qt, QPoint, QSize, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QCursor, QIcon, QKeySequence
-from plot_utils import create_plot_widget
+from plot_utils import create_plot_widget, calculate_ankle_angle
 from mediapipe_utils import get_pose_landmarks_from_frame, process_video_with_mediapipe
 from PyQt5.QtWidgets import QProgressDialog, QMessageBox
 from pose_format_utils import load_pose_data, save_pose_data, SUPPORTED_FORMATS, process_mediapipe_to_rr21
@@ -160,6 +160,16 @@ class PoseEditor(QMainWindow):
 
         # Add keypoint names (default, to be updated based on pose data)
         self.keypoint_names = []
+
+        self.last_update_time = 0
+        self.update_interval_ms = 10  # Only update every 10ms during dragging
+
+        self.gc_counter = 0
+
+        # Initialize caching system properties
+        self._cached_frame = None
+        self._cached_frame_idx = -1  # Use -1 to ensure it's different from any valid frame idx
+        self._needs_redraw = True
 
         self.initUI()
     
@@ -364,12 +374,16 @@ class PoseEditor(QMainWindow):
 
     def toggle_black_and_white(self):
         self.black_and_white = not self.black_and_white
+        self._needs_redraw = True  # Force a cache bypass
         self.display_frame()
 
     def display_frame(self):
         if self.current_frame is not None:
+            # Safer checking with getattr
+            current_cache_idx = getattr(self, '_cached_frame_idx', -1)
+            
             # Use cached pixmap when possible
-            if not hasattr(self, '_cached_frame') or self._cached_frame_idx != self.current_frame_idx or self._needs_redraw:
+            if not hasattr(self, '_cached_frame') or current_cache_idx != self.current_frame_idx or self._needs_redraw:
                 # Only do the minimum needed for visual feedback
                 frame = self.current_frame.copy()
                 
@@ -403,6 +417,7 @@ class PoseEditor(QMainWindow):
                 bytes_per_line = 3 * width
                 q_img = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
                 self._base_pixmap = QPixmap.fromImage(q_img)
+                self._cached_frame = self.current_frame.copy()
                 self._cached_frame_idx = self.current_frame_idx
                 self._needs_redraw = False
                 
@@ -664,7 +679,10 @@ class PoseEditor(QMainWindow):
                 scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
                                    int(pos.y() / self.zoom_level))
                 # Update point position
-                self.move_point(scaled_pos)
+                current_time = time.time() * 1000
+                if current_time - self.last_update_time > self.update_interval_ms:
+                    self.move_point(scaled_pos)
+                    self.last_update_time = current_time
                 # Update display without updating plot for performance
                 self.display_frame()
                 return True
@@ -924,13 +942,67 @@ class PoseEditor(QMainWindow):
             return
             
         if hasattr(self, 'keypoint_plot') and self.pose_data is not None and self.selected_point is not None:
+            # Calculate ankle angles for all frames
+            ankle_angles = {'left': [], 'right': []}
+            
+            try:
+                # Find keypoint indices using RR21 uppercase format
+                l_knee_idx = self.keypoint_names.index("LEFT_KNEE") if "LEFT_KNEE" in self.keypoint_names else None
+                l_ankle_idx = self.keypoint_names.index("LEFT_ANKLE") if "LEFT_ANKLE" in self.keypoint_names else None
+                l_foot_idx = self.keypoint_names.index("LEFT_FOOT") if "LEFT_FOOT" in self.keypoint_names else None
+                
+                r_knee_idx = self.keypoint_names.index("RIGHT_KNEE") if "RIGHT_KNEE" in self.keypoint_names else None
+                r_ankle_idx = self.keypoint_names.index("RIGHT_ANKLE") if "RIGHT_ANKLE" in self.keypoint_names else None
+                r_foot_idx = self.keypoint_names.index("RIGHT_FOOT") if "RIGHT_FOOT" in self.keypoint_names else None
+                            
+                # Calculate angles for all frames if we have all required keypoints
+                have_left = all(idx is not None for idx in [l_knee_idx, l_ankle_idx, l_foot_idx])
+                have_right = all(idx is not None for idx in [r_knee_idx, r_ankle_idx, r_foot_idx])
+
+                # Prepare empty lists of the right length
+                ankle_angles['left'] = [None] * len(self.pose_data)
+                ankle_angles['right'] = [None] * len(self.pose_data)
+                
+                # Calculate angles for each frame
+                for frame_idx in range(len(self.pose_data)):
+                    # Get current frame's pose
+                    frame_pose = self.pose_data.iloc[frame_idx].values.reshape(-1, 2)
+                    
+                    # Left ankle angle
+                    if have_left:
+                        l_knee = frame_pose[l_knee_idx]
+                        l_ankle = frame_pose[l_ankle_idx]
+                        l_foot = frame_pose[l_foot_idx]
+                        
+                        # Calculate angle
+                        l_angle = calculate_ankle_angle(l_knee, l_ankle, l_foot)
+                        ankle_angles['left'][frame_idx] = l_angle
+                    
+                    # Right ankle angle
+                    if have_right:
+                        r_knee = frame_pose[r_knee_idx]
+                        r_ankle = frame_pose[r_ankle_idx]
+                        r_foot = frame_pose[r_foot_idx]
+                        
+                        # Calculate angle
+                        r_angle = calculate_ankle_angle(r_knee, r_ankle, r_foot)
+                        ankle_angles['right'][frame_idx] = r_angle
+            
+            except Exception as e:
+                print(f"Error calculating ankle angles: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # Update plot with keypoint trajectory and ankle angles
             total_frames = len(self.pose_data)
             self.keypoint_plot.plot_keypoint_trajectory(
                 self.pose_data, 
                 self.selected_point, 
                 self.current_frame_idx, 
-                total_frames
+                total_frames,
+                ankle_angles
             )
+            
         elif hasattr(self, 'keypoint_plot'):
             self.keypoint_plot.clear_plot()
     
