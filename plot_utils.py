@@ -9,20 +9,27 @@ import pandas as pd
 class KeypointPlot(FigureCanvasQTAgg):
     """Plot canvas for displaying keypoint trajectories"""
     
-    def __init__(self, parent=None, width=5, height=2, dpi=100):
-        super().__init__()  # Add this line to call the parent class initializer
+    def __init__(self, parent=None, width=5, height=3, dpi=100):
+        # Create figure
         self.fig = Figure(figsize=(width, height), dpi=dpi)
-        self.fig.tight_layout()
-        self.axes_x = self.fig.add_subplot(211)  # X coordinate plot
-        self.axes_y = self.fig.add_subplot(212)  # Y coordinate plot
+        
+        # Initialize parent class with the figure
+        super(KeypointPlot, self).__init__(self.fig)
+        
+        # Create three subplots (x, y, and ankle angles)
+        self.axes_x = self.fig.add_subplot(311)  # X coordinate plot
+        self.axes_y = self.fig.add_subplot(312)  # Y coordinate plot
+        self.axes_ankle = self.fig.add_subplot(313)  # Ankle angle plot
         
         # Set up plots
         self.axes_x.set_ylabel('X Coord')
         self.axes_y.set_ylabel('Y Coord')
-        self.axes_y.set_xlabel('Frame Number')
+        self.axes_ankle.set_ylabel('Angle (°)')
+        self.axes_ankle.set_xlabel('Frame')
         
-        # Hide x labels on top plot
+        # Hide x labels on top plots
         self.axes_x.set_xticklabels([])
+        self.axes_y.set_xticklabels([])
         
         # Add interactivity elements
         self.frame_callback = None
@@ -39,14 +46,12 @@ class KeypointPlot(FigureCanvasQTAgg):
         # Set cursor to pointing hand to indicate clickable area
         self.setCursor(Qt.PointingHandCursor)
         
-        # Help text removed
-        
-        super(KeypointPlot, self).__init__(self.fig)
-        self.setMinimumHeight(200)  # Set minimum height for the plot
+        self.fig.tight_layout()
+        self.setMinimumHeight(300)  # Increased height for three plots
     
     def on_plot_click(self, event):
         """Handle mouse clicks on the plot to select a frame"""
-        if not self.click_enabled or event.inaxes not in [self.axes_x, self.axes_y] or not self.frame_callback:
+        if not self.click_enabled or event.inaxes not in [self.axes_x, self.axes_y, self.axes_ankle] or not self.frame_callback:
             return
             
         # Get the frame index from the x-coordinate of the click
@@ -67,7 +72,7 @@ class KeypointPlot(FigureCanvasQTAgg):
     
     def on_mouse_move(self, event):
         """Show hover indicator when mouse moves over the plot"""
-        if event.inaxes not in [self.axes_x, self.axes_y]:
+        if event.inaxes not in [self.axes_x, self.axes_y, self.axes_ankle]:
             # Remove hover line when mouse leaves plot area
             if self.hover_line is not None:
                 self.clear_hover_line()
@@ -94,7 +99,8 @@ class KeypointPlot(FigureCanvasQTAgg):
         # Draw dotted gray line at hover position
         self.hover_line = [
             self.axes_x.axvline(x=frame_idx, color='gray', linestyle=':', alpha=0.6),
-            self.axes_y.axvline(x=frame_idx, color='gray', linestyle=':', alpha=0.6)
+            self.axes_y.axvline(x=frame_idx, color='gray', linestyle=':', alpha=0.6),
+            self.axes_ankle.axvline(x=frame_idx, color='gray', linestyle=':', alpha=0.6)
         ]
         
         # Add frame number tooltip
@@ -124,19 +130,21 @@ class KeypointPlot(FigureCanvasQTAgg):
         if self.hover_line is not None:
             self.clear_hover_line()
             
-        # Draw vertical line in both plots
+        # Draw vertical line in all plots
         self.axes_x.axvline(x=frame_idx, color=color, linestyle=linestyle, alpha=alpha)
         self.axes_y.axvline(x=frame_idx, color=color, linestyle=linestyle, alpha=alpha)
+        self.axes_ankle.axvline(x=frame_idx, color=color, linestyle=linestyle, alpha=alpha)
     
-    def plot_keypoint_trajectory(self, pose_data, keypoint_idx, current_frame_idx, total_frames):
+    def plot_keypoint_trajectory(self, pose_data, keypoint_idx, current_frame_idx, total_frames, ankle_angles=None):
         """
-        Plot the trajectory of a specific keypoint across all frames
+        Plot the trajectory of a specific keypoint across all frames and ankle angles
         
         Args:
             pose_data: DataFrame containing pose data
             keypoint_idx: Index of the keypoint to plot
             current_frame_idx: Current frame index to highlight
             total_frames: Total number of frames
+            ankle_angles: Dictionary with 'left' and 'right' lists of ankle angles
         """
         if pose_data is None or keypoint_idx is None:
             self.clear_plot()
@@ -146,14 +154,17 @@ class KeypointPlot(FigureCanvasQTAgg):
             # Clear previous plots
             self.axes_x.clear()
             self.axes_y.clear()
+            self.axes_ankle.clear()
             
             # Set up axes
             self.axes_x.set_ylabel('X Coord')
             self.axes_y.set_ylabel('Y Coord')
-            self.axes_y.set_xlabel('Frame Number')
+            self.axes_ankle.set_ylabel('Angle (°)')
+            self.axes_ankle.set_xlabel('Frame Number')
             
-            # Hide x labels on top plot
+            # Hide x labels on top plots
             self.axes_x.set_xticklabels([])
+            self.axes_y.set_xticklabels([])
             
             # Extract x and y coordinates for the selected keypoint across all frames
             x_coords = []
@@ -194,20 +205,56 @@ class KeypointPlot(FigureCanvasQTAgg):
                                fontsize=8, color='green', ha='left', va='center',
                                bbox=dict(boxstyle='round,pad=0.1', fc='white', alpha=0.7))
             
+            # Plot ankle angles if provided
+            if ankle_angles and 'left' in ankle_angles and 'right' in ankle_angles:
+                # Filter out None values
+                left_frames = [i for i, angle in enumerate(ankle_angles['left']) if angle is not None]
+                left_angles = [ankle_angles['left'][i] for i in left_frames]
+                
+                right_frames = [i for i, angle in enumerate(ankle_angles['right']) if angle is not None]
+                right_angles = [ankle_angles['right'][i] for i in right_frames]
+                
+                # Plot ankle angles
+                if left_frames:
+                    self.axes_ankle.plot(left_frames, left_angles, 'r-', alpha=0.7, linewidth=1.2, label='Left Ankle')
+                
+                if right_frames:
+                    self.axes_ankle.plot(right_frames, right_angles, 'b-', alpha=0.7, linewidth=1.2, label='Right Ankle')
+                
+                # Add legend
+                self.axes_ankle.legend(loc='upper right', fontsize=8)
+                
+                # Add current frame angle values if available
+                if 0 <= current_frame_idx < len(ankle_angles['left']) and ankle_angles['left'][current_frame_idx] is not None:
+                    left_angle = ankle_angles['left'][current_frame_idx]
+                    self.axes_ankle.plot(current_frame_idx, left_angle, 'ro', ms=5)
+                    self.axes_ankle.text(current_frame_idx+2, left_angle, f"L: {left_angle:.1f}°", 
+                                       fontsize=8, color='red', ha='left', va='center')
+                
+                if 0 <= current_frame_idx < len(ankle_angles['right']) and ankle_angles['right'][current_frame_idx] is not None:
+                    right_angle = ankle_angles['right'][current_frame_idx]
+                    self.axes_ankle.plot(current_frame_idx, right_angle, 'bo', ms=5)
+                    self.axes_ankle.text(current_frame_idx+2, right_angle, f"R: {right_angle:.1f}°", 
+                                       fontsize=8, color='blue', ha='left', va='center')
+            
             # Set limits with focus on current frame
             padding = max(20, int(total_frames * 0.05))  # 5% padding or at least 20 frames
             self.axes_x.set_xlim(max(0, current_frame_idx - padding), 
-                               min(total_frames, current_frame_idx + padding))
+                              min(total_frames, current_frame_idx + padding))
             self.axes_y.set_xlim(max(0, current_frame_idx - padding), 
-                               min(total_frames, current_frame_idx + padding))
+                              min(total_frames, current_frame_idx + padding))
+            self.axes_ankle.set_xlim(max(0, current_frame_idx - padding), 
+                                 min(total_frames, current_frame_idx + padding))
             
             # Add grid for better readability
             self.axes_x.grid(True, alpha=0.3, linestyle=':')
             self.axes_y.grid(True, alpha=0.3, linestyle=':')
+            self.axes_ankle.grid(True, alpha=0.3, linestyle=':')
             
             # Draw vertical line at current frame
             self.axes_x.axvline(x=current_frame_idx, color='r', linestyle='--', alpha=0.5)
             self.axes_y.axvline(x=current_frame_idx, color='r', linestyle='--', alpha=0.5)
+            self.axes_ankle.axvline(x=current_frame_idx, color='r', linestyle='--', alpha=0.5)
             
             # Add keypoint name as title
             if keypoint_idx < len(pose_data.columns) // 2:
@@ -226,10 +273,13 @@ class KeypointPlot(FigureCanvasQTAgg):
         """Clear the plot"""
         self.axes_x.clear()
         self.axes_y.clear()
+        self.axes_ankle.clear()
         self.axes_x.set_ylabel('X Coord')
         self.axes_y.set_ylabel('Y Coord')
-        self.axes_y.set_xlabel('Frame Number')
+        self.axes_ankle.set_ylabel('Angle (°)')
+        self.axes_ankle.set_xlabel('Frame Number')
         self.axes_x.set_xticklabels([])
+        self.axes_y.set_xticklabels([])
         self.fig.tight_layout()
         self.draw()
 
@@ -243,3 +293,46 @@ def create_plot_widget():
     plot_layout.setContentsMargins(0, 0, 0, 0)
     
     return plot_widget, plot
+
+def calculate_ankle_angle(knee, ankle, foot):
+    """
+    Calculate the angle between the shank (ankle-knee) and foot (ankle-foot) vectors
+    
+    Args:
+        knee: (x,y) coordinates of knee joint
+        ankle: (x,y) coordinates of ankle joint
+        foot: (x,y) coordinates of foot (toe) joint
+        
+    Returns:
+        angle in degrees (in full 360° range)
+
+    Warnings:
+        This function assumes that the knee joint is above the ankle joint and the foot joint is below the ankle joint.
+        For more robustness, you may need to check the relative positions of these points before calling this function
+        Additionally, this use the picture coordinate system where y-axis increases downwards
+    """
+    # Define vectors
+    S = np.array([knee[0] - ankle[0], ankle[1] - knee[1]])  # Shank vector
+    F = np.array([foot[0] - ankle[0], ankle[1] - foot[1]])  # Foot vector
+    
+    # Calculate magnitudes
+    mag_S = np.linalg.norm(S)
+    mag_F = np.linalg.norm(F)
+    
+    # Avoid division by zero
+    if mag_S == 0 or mag_F == 0:
+        return 0.0
+    
+    # Method 1: Using cross product and dot product for signed angle
+    # Cross product gives the sine of the angle times magnitudes
+    cross_product = np.cross(S, F)
+    # Dot product gives the cosine of the angle times magnitudes
+    dot_product = np.dot(S, F)
+    
+    # Calculate signed angle in radians using atan2
+    angle_rad = np.arctan2(cross_product, dot_product)
+    
+    # Convert to degrees
+    angle_deg = np.degrees(angle_rad)
+    
+    return angle_deg
