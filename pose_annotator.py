@@ -5,7 +5,7 @@ import numpy as np
 import time
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, 
                            QVBoxLayout, QWidget, QFileDialog, QHBoxLayout, QSlider,
-                           QScrollArea, QGroupBox, QComboBox, QLineEdit)
+                           QScrollArea, QGroupBox, QComboBox, QLineEdit, QShortcut)
 from PyQt5.QtCore import Qt, QPoint, QSize, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QCursor, QIcon, QKeySequence
 from plot_utils import create_plot_widget, calculate_ankle_angle
@@ -318,6 +318,14 @@ class PoseEditor(QMainWindow):
         self.confirm_button.clicked.connect(self.update_keypoint_coordinates)
         self.keypoint_ops_layout.addWidget(self.confirm_button)
 
+        # Add to your initUI method after creating the coordinate inputs
+        self.x_coord_input.returnPressed.connect(self.update_keypoint_coordinates)
+        self.y_coord_input.returnPressed.connect(self.update_keypoint_coordinates)
+
+        # Add these connections
+        self.x_coord_input.textEdited.connect(self.preview_coordinate_update)
+        self.y_coord_input.textEdited.connect(self.preview_coordinate_update)
+
         # Set the layout and add to right panel
         self.keypoint_ops_group_box.setLayout(self.keypoint_ops_layout)
         right_layout.addWidget(self.keypoint_ops_group_box)
@@ -372,70 +380,70 @@ class PoseEditor(QMainWindow):
         self.setMinimumSize(800, 600)
         self.show()
 
+        # Add keyboard shortcuts that work globally
+        self.prev_shortcut = QShortcut(QKeySequence(Qt.Key_Left), self)
+        self.prev_shortcut.activated.connect(self.prev_frame)
+        
+        self.next_shortcut = QShortcut(QKeySequence(Qt.Key_Right), self)
+        self.next_shortcut.activated.connect(self.next_frame)
+        
+        # Make the navigation buttons more obvious with tooltips
+        self.prev_frame_button.setToolTip("Previous frame (Left arrow key)")
+        self.next_frame_button.setToolTip("Next frame (Right arrow key)")
+
     def toggle_black_and_white(self):
         self.black_and_white = not self.black_and_white
-        self._needs_redraw = True  # Force a cache bypass
-        self.display_frame()
-
-    def display_frame(self):
-        if self.current_frame is not None:
-            # Safer checking with getattr
-            current_cache_idx = getattr(self, '_cached_frame_idx', -1)
+        frame = self.current_frame.copy()
+        
+        if self.black_and_white:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
             
-            # Use cached pixmap when possible
-            if not hasattr(self, '_cached_frame') or current_cache_idx != self.current_frame_idx or self._needs_redraw:
-                # Only do the minimum needed for visual feedback
-                frame = self.current_frame.copy()
-                
-                if self.black_and_white:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-                    
-                if self.pose_data is not None:
-                    self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
-                    for i, point in enumerate(self.current_pose):
-                        radius = 8 if i == self.selected_point else 5
-                        color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
-                        cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+        if self.pose_data is not None:
+            self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+            for i, point in enumerate(self.current_pose):
+                radius = 8 if i == self.selected_point else 5
+                color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
+                cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+        
+        # Apply rotation if needed
+        if self.rotation_angle > 0:
+            h, w = frame.shape[:2]
+            center = (w // 2, h // 2)
+            
+            # Get rotation matrix
+            if self.rotation_angle == 90:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            elif self.rotation_angle == 180:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+            elif self.rotation_angle == 270:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        
+        # Convert to QPixmap only when necessary
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        height, width, channel = frame_rgb.shape
+        bytes_per_line = 3 * width
+        q_img = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
+        self._base_pixmap = QPixmap.fromImage(q_img)
+        self._cached_frame = self.current_frame.copy()
+        self._cached_frame_idx = self.current_frame_idx
+        self._needs_redraw = False
+            
+        # Apply zoom to cached base pixmap
+        scaled_width = int(self._base_pixmap.width() * self.zoom_level)
+        scaled_height = int(self._base_pixmap.height() * self.zoom_level)
 
-                # Apply rotation if needed
-                if self.rotation_angle > 0:
-                    h, w = frame.shape[:2]
-                    center = (w // 2, h // 2)
-                    
-                    # Get rotation matrix
-                    if self.rotation_angle == 90:
-                        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-                    elif self.rotation_angle == 180:
-                        frame = cv2.rotate(frame, cv2.ROTATE_180)
-                    elif self.rotation_angle == 270:
-                        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        # Use faster transformation when dragging
+        transformation = Qt.FastTransformation if self.dragging else Qt.SmoothTransformation
+        scaled_pixmap = self._base_pixmap.scaled(
+            scaled_width,
+            scaled_height,
+            Qt.KeepAspectRatio,
+            transformation
+        )
 
-                # Convert to QPixmap only when necessary
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                height, width, channel = frame_rgb.shape
-                bytes_per_line = 3 * width
-                q_img = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
-                self._base_pixmap = QPixmap.fromImage(q_img)
-                self._cached_frame = self.current_frame.copy()
-                self._cached_frame_idx = self.current_frame_idx
-                self._needs_redraw = False
-                
-            # Apply zoom to cached base pixmap
-            scaled_width = int(self._base_pixmap.width() * self.zoom_level)
-            scaled_height = int(self._base_pixmap.height() * self.zoom_level)
-
-            # Use faster transformation when dragging
-            transformation = Qt.FastTransformation if self.dragging else Qt.SmoothTransformation
-            scaled_pixmap = self._base_pixmap.scaled(
-                scaled_width,
-                scaled_height,
-                Qt.KeepAspectRatio,
-                transformation
-            )
-
-            self.label.setPixmap(scaled_pixmap)
-            self.label.setFixedSize(scaled_width, scaled_height)
+        self.label.setPixmap(scaled_pixmap)
+        self.label.setFixedSize(scaled_width, scaled_height)
 
     def update_coordinate_inputs(self):
         if self.selected_point is not None and self.current_pose is not None:
@@ -578,8 +586,7 @@ class PoseEditor(QMainWindow):
             self.frame_slider.setPageStep(max(1, total_frames // 100))
             
             # Reset cached frame data
-            if hasattr(self, '_cached_frame_idx'):
-                delattr(self, '_cached_frame_idx')
+            self._cached_frame_idx = -1  # Reset to invalid value instead of deleting
             self._needs_redraw = True
             
             # Get actual video FPS
@@ -838,25 +845,33 @@ class PoseEditor(QMainWindow):
 
     def next_frame(self):
         if hasattr(self, 'cap') and self.cap and self.current_frame_idx < self.frame_slider.maximum():
+            # Pause playback if active
+            if self.playing:
+                self.pause_playback()
             self.current_frame_idx += 1
             self.frame_slider.setValue(self.current_frame_idx)
     
     def prev_frame(self):
         if hasattr(self, 'cap') and self.cap and self.current_frame_idx > 0:
+            # Pause playback if active
+            if self.playing:
+                self.pause_playback()
             self.current_frame_idx -= 1
             self.frame_slider.setValue(self.current_frame_idx)
     
     def on_keypoint_selected(self, index):
         if 0 <= index < len(self.keypoint_names):
             self.selected_point = index
+            self._needs_redraw = True  # Force redraw
             self.update_coordinate_inputs()
-            self.update_plot()  # Add this line
-            self.display_frame()
+            self.display_frame()  # Must come before update_plot for visual feedback
+            self.update_plot()
         else:
             self.selected_point = None
+            self._needs_redraw = True  # Force redraw
             self.update_coordinate_inputs()
-            self.update_plot()  # Add this line
             self.display_frame()
+            self.update_plot()
     
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
@@ -929,13 +944,16 @@ class PoseEditor(QMainWindow):
                 # Update current_pose to reflect the changes
                 if self.current_pose is not None and self.selected_point < len(self.current_pose):
                     self.current_pose[self.selected_point] = [new_x, new_y]
+                
+                # Force a redraw before displaying the frame
+                self._needs_redraw = True
                     
                 # Display the updated frame
                 self.display_frame()
                 
                 # Update the plot
                 self.update_plot()
-            
+
     def update_plot(self):
         # Only update plot if we have data and aren't dragging (for responsiveness)
         if self.dragging:
@@ -1374,6 +1392,94 @@ class PoseEditor(QMainWindow):
             
             # Re-enable plot clicks after a short delay
             QTimer.singleShot(300, lambda: setattr(self.keypoint_plot, 'click_enabled', True))
+
+    # Add this new method
+    def preview_coordinate_update(self):
+        """Preview coordinate changes without committing them to the undo history"""
+        if self.selected_point is not None and self.pose_data is not None:
+            try:
+                x = int(self.x_coord_input.text())
+                y = int(self.y_coord_input.text())
+                
+                # Create temporary display without changing underlying data
+                self._preview_coords = (self.selected_point, x, y)
+                self._needs_redraw = True
+                self.display_frame()
+            except ValueError:
+                pass
+
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts for frame navigation"""
+        if event.key() == Qt.Key_Left:
+            # Left arrow key - previous frame
+            self.prev_frame()
+        elif event.key() == Qt.Key_Right:
+            # Right arrow key - next frame
+            self.next_frame()
+        else:
+            # Pass other key events to parent class
+            super().keyPressEvent(event)
+
+    def display_frame(self):
+        """Render and display the current frame with all appropriate transformations"""
+        if self.current_frame is None:
+            return
+            
+        # More robust check that won't crash if attribute is missing
+        cached_frame_idx = getattr(self, '_cached_frame_idx', -999)
+        needs_redraw = getattr(self, '_needs_redraw', True)
+        
+        if not hasattr(self, '_cached_frame') or cached_frame_idx != self.current_frame_idx or needs_redraw:
+            # Start with a fresh copy of the current frame
+            frame = self.current_frame.copy()
+            
+            # Apply black and white transformation if enabled
+            if self.black_and_white:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+                
+            # Draw keypoints on frame
+            if self.pose_data is not None:
+                self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+                for i, point in enumerate(self.current_pose):
+                    radius = 8 if i == self.selected_point else 5
+                    color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
+                    cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+            
+            # Apply rotation if needed
+            if self.rotation_angle > 0:
+                if self.rotation_angle == 90:
+                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                elif self.rotation_angle == 180:
+                    frame = cv2.rotate(frame, cv2.ROTATE_180)
+                elif self.rotation_angle == 270:
+                    frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            
+            # Convert to QPixmap
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            height, width, channel = frame_rgb.shape
+            bytes_per_line = 3 * width
+            q_img = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            self._base_pixmap = QPixmap.fromImage(q_img)
+            self._cached_frame = self.current_frame.copy()
+            self._cached_frame_idx = self.current_frame_idx
+            self._needs_redraw = False
+        
+        # Apply zoom to cached base pixmap
+        scaled_width = int(self._base_pixmap.width() * self.zoom_level)
+        scaled_height = int(self._base_pixmap.height() * self.zoom_level)
+
+        # Use faster transformation when dragging
+        transformation = Qt.FastTransformation if self.dragging else Qt.SmoothTransformation
+        scaled_pixmap = self._base_pixmap.scaled(
+            scaled_width,
+            scaled_height,
+            Qt.KeepAspectRatio,
+            transformation
+        )
+
+        self.label.setPixmap(scaled_pixmap)
+        self.label.setFixedSize(scaled_width, scaled_height)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
