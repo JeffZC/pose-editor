@@ -135,7 +135,7 @@ class KeypointPlot(FigureCanvasQTAgg):
         self.axes_y.axvline(x=frame_idx, color=color, linestyle=linestyle, alpha=alpha)
         self.axes_ankle.axvline(x=frame_idx, color=color, linestyle=linestyle, alpha=alpha)
     
-    def plot_keypoint_trajectory(self, pose_data, keypoint_idx, current_frame_idx, total_frames, ankle_angles=None):
+    def plot_keypoint_trajectory(self, pose_data, keypoint_idx, current_frame_idx, total_frames, ankle_angles=None, show_angles=True):
         """
         Plot the trajectory of a specific keypoint across all frames and ankle angles
         
@@ -145,6 +145,7 @@ class KeypointPlot(FigureCanvasQTAgg):
             current_frame_idx: Current frame index to highlight
             total_frames: Total number of frames
             ankle_angles: Dictionary with 'left' and 'right' lists of ankle angles
+            show_angles: Whether to show the ankle angles plot (for body data only)
         """
         if pose_data is None or keypoint_idx is None:
             self.clear_plot()
@@ -159,12 +160,25 @@ class KeypointPlot(FigureCanvasQTAgg):
             # Set up axes
             self.axes_x.set_ylabel('X Coord')
             self.axes_y.set_ylabel('Y Coord')
-            self.axes_ankle.set_ylabel('Angle (°)')
-            self.axes_ankle.set_xlabel('Frame Number')
             
-            # Hide x labels on top plots
+            # Adjust plot layout based on whether we're showing the angle plot
+            if show_angles:
+                # Three plots: X, Y, Angle
+                self.axes_x.set_position([0.125, 0.71, 0.775, 0.2])
+                self.axes_y.set_position([0.125, 0.41, 0.775, 0.2])
+                self.axes_ankle.set_position([0.125, 0.1, 0.775, 0.2])
+                self.axes_ankle.set_visible(True)
+                self.axes_ankle.set_ylabel('Angle (°)')
+                self.axes_ankle.set_xlabel('Frame Number')
+            else:
+                # Two plots: X, Y only
+                self.axes_x.set_position([0.125, 0.55, 0.775, 0.35])
+                self.axes_y.set_position([0.125, 0.1, 0.775, 0.35])
+                self.axes_ankle.set_visible(False)
+                self.axes_y.set_xlabel('Frame Number')
+            
+            # Hide x labels on top plot
             self.axes_x.set_xticklabels([])
-            self.axes_y.set_xticklabels([])
             
             # Extract x and y coordinates for the selected keypoint across all frames
             x_coords = []
@@ -205,8 +219,8 @@ class KeypointPlot(FigureCanvasQTAgg):
                                fontsize=8, color='green', ha='left', va='center',
                                bbox=dict(boxstyle='round,pad=0.1', fc='white', alpha=0.7))
             
-            # Plot ankle angles if provided
-            if ankle_angles and 'left' in ankle_angles and 'right' in ankle_angles:
+            # Plot ankle angles if provided and if we're showing the angle plot
+            if show_angles and ankle_angles and 'left' in ankle_angles and 'right' in ankle_angles:
                 # Filter out None values
                 left_frames = [i for i, angle in enumerate(ankle_angles['left']) if angle is not None]
                 left_angles = [ankle_angles['left'][i] for i in left_frames]
@@ -237,28 +251,44 @@ class KeypointPlot(FigureCanvasQTAgg):
                     self.axes_ankle.text(current_frame_idx+2, right_angle, f"R: {right_angle:.1f}°", 
                                        fontsize=8, color='blue', ha='left', va='center')
             
+                # Add grid for angle plot
+                self.axes_ankle.grid(True, alpha=0.3, linestyle=':')
+                
+                # Draw vertical line at current frame in angle plot
+                self.axes_ankle.axvline(x=current_frame_idx, color='r', linestyle='--', alpha=0.5)
+            
             # Set limits with focus on current frame
             padding = max(20, int(total_frames * 0.05))  # 5% padding or at least 20 frames
             self.axes_x.set_xlim(max(0, current_frame_idx - padding), 
                               min(total_frames, current_frame_idx + padding))
             self.axes_y.set_xlim(max(0, current_frame_idx - padding), 
                               min(total_frames, current_frame_idx + padding))
-            self.axes_ankle.set_xlim(max(0, current_frame_idx - padding), 
-                                 min(total_frames, current_frame_idx + padding))
+                              
+            if show_angles:
+                self.axes_ankle.set_xlim(max(0, current_frame_idx - padding), 
+                                     min(total_frames, current_frame_idx + padding))
             
             # Add grid for better readability
             self.axes_x.grid(True, alpha=0.3, linestyle=':')
             self.axes_y.grid(True, alpha=0.3, linestyle=':')
-            self.axes_ankle.grid(True, alpha=0.3, linestyle=':')
             
             # Draw vertical line at current frame
             self.axes_x.axvline(x=current_frame_idx, color='r', linestyle='--', alpha=0.5)
             self.axes_y.axvline(x=current_frame_idx, color='r', linestyle='--', alpha=0.5)
-            self.axes_ankle.axvline(x=current_frame_idx, color='r', linestyle='--', alpha=0.5)
             
             # Add keypoint name as title
             if keypoint_idx < len(pose_data.columns) // 2:
-                keypoint_name = pose_data.columns[keypoint_idx * 2].replace('_X', '')
+                try:
+                    # Handle the case where pose_data.columns might be integer indices
+                    if hasattr(pose_data.columns[keypoint_idx * 2], 'replace'):
+                        keypoint_name = pose_data.columns[keypoint_idx * 2].replace('_X', '')
+                    else:
+                        # If columns are numeric indices, use a generic name
+                        keypoint_name = f"Point {keypoint_idx}"
+                except IndexError:
+                    # Use a generic name if column name can't be extracted
+                    keypoint_name = f"Point {keypoint_idx}"
+                
                 self.axes_x.set_title(f"Trajectory for keypoint: {keypoint_name}", 
                                    fontsize=9, pad=2)
             
@@ -267,6 +297,8 @@ class KeypointPlot(FigureCanvasQTAgg):
             
         except Exception as e:
             print(f"Error plotting keypoint trajectory: {e}")
+            import traceback
+            traceback.print_exc()
             self.clear_plot()
             
     def clear_plot(self):
@@ -274,12 +306,20 @@ class KeypointPlot(FigureCanvasQTAgg):
         self.axes_x.clear()
         self.axes_y.clear()
         self.axes_ankle.clear()
+        
+        # Reset positions to default
+        self.axes_x.set_position([0.125, 0.71, 0.775, 0.2])
+        self.axes_y.set_position([0.125, 0.41, 0.775, 0.2])
+        self.axes_ankle.set_position([0.125, 0.1, 0.775, 0.2])
+        
         self.axes_x.set_ylabel('X Coord')
         self.axes_y.set_ylabel('Y Coord')
         self.axes_ankle.set_ylabel('Angle (°)')
         self.axes_ankle.set_xlabel('Frame Number')
         self.axes_x.set_xticklabels([])
         self.axes_y.set_xticklabels([])
+        self.axes_ankle.set_visible(True)
+        
         self.fig.tight_layout()
         self.draw()
 
