@@ -1,10 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PyQt5.QtWidgets import QVBoxLayout, QWidget
 from PyQt5.QtCore import Qt, QTimer
-import pandas as pd
 
 class KeypointPlot(FigureCanvasQTAgg):
     """Plot canvas for displaying keypoint trajectories"""

@@ -809,6 +809,30 @@ class PoseEditor(QMainWindow):
                         self.keypoint_dropdown.setCurrentIndex(self.selected_point)
                         self.keypoint_dropdown.blockSignals(False)
                         self.dragging = True
+                        
+                        # Store the initial position for the drag operation
+                        category = self._current_keypoint_type
+                        if category == "Body" and self.pose_data is not None:
+                            self._drag_start_pos = (
+                                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2],
+                                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1]
+                            )
+                        elif category == "Left Hand" and self.hand_data_left is not None:
+                            self._drag_start_pos = (
+                                self.hand_data_left.iloc[self.current_frame_idx, self.selected_point],
+                                self.hand_data_left.iloc[self.current_frame_idx, self.selected_point + 21]
+                            )
+                        elif category == "Right Hand" and self.hand_data_right is not None:
+                            self._drag_start_pos = (
+                                self.hand_data_right.iloc[self.current_frame_idx, self.selected_point],
+                                self.hand_data_right.iloc[self.current_frame_idx, self.selected_point + 21]
+                            )
+                        elif category == "Face" and self.face_data is not None:
+                            self._drag_start_pos = (
+                                self.face_data.iloc[self.current_frame_idx, self.selected_point],
+                                self.face_data.iloc[self.current_frame_idx, self.selected_point + 468]
+                            )
+                        
                         self.update_coordinate_inputs()
                         self._needs_redraw = True
                         self.display_frame()
@@ -816,6 +840,7 @@ class PoseEditor(QMainWindow):
                 elif event.button() == Qt.RightButton:
                     self.selected_point = None
                     self.dragging = False
+                    
                     # Reset dropdown
                     self.keypoint_dropdown.blockSignals(True)
                     self.keypoint_dropdown.setCurrentIndex(-1)
@@ -831,10 +856,13 @@ class PoseEditor(QMainWindow):
                 pos = event.pos()
                 scaled_pos = QPoint(int(pos.x() / self.zoom_level), 
                                    int(pos.y() / self.zoom_level))
+                # Transform coordinates based on rotation for accurate dragging
+                transformed_pos = self.transform_coordinates(scaled_pos)
+                
                 # Update point position
                 current_time = time.time() * 1000
                 if current_time - self.last_update_time > self.update_interval_ms:
-                    self.move_point(scaled_pos)
+                    self.move_point(transformed_pos)
                     self.last_update_time = current_time
                 # Update display without updating plot for performance
                 self.display_frame()
@@ -845,21 +873,39 @@ class PoseEditor(QMainWindow):
                     self.dragging = False
                     
                     # Create command when drag completes
-                    if hasattr(self, '_drag_start_pos') and self.pose_data is not None and self.selected_point is not None:
+                    if hasattr(self, '_drag_start_pos') and self.selected_point is not None:
                         start_x, start_y = self._drag_start_pos
+                        category = self._current_keypoint_type
                         
-                        # Make sure we have valid pose data and selected point before accessing
+                        # Get current position based on keypoint category
                         try:
-                            current_x = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2]
-                            current_y = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1]
+                            current_x = None
+                            current_y = None
                             
-                            # Only add command if position actually changed
-                            if abs(start_x - current_x) > 0 or abs(start_y - current_y) > 0:
-                                self.create_move_command(
+                            if category == "Body" and self.pose_data is not None:
+                                current_x = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2]
+                                current_y = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1]
+                            elif category == "Left Hand" and self.hand_data_left is not None:
+                                current_x = self.hand_data_left.iloc[self.current_frame_idx, self.selected_point]
+                                current_y = self.hand_data_left.iloc[self.current_frame_idx, self.selected_point + 21]
+                            elif category == "Right Hand" and self.hand_data_right is not None:
+                                current_x = self.hand_data_right.iloc[self.current_frame_idx, self.selected_point]
+                                current_y = self.hand_data_right.iloc[self.current_frame_idx, self.selected_point + 21]
+                            elif category == "Face" and self.face_data is not None:
+                                current_x = self.face_data.iloc[self.current_frame_idx, self.selected_point]
+                                current_y = self.face_data.iloc[self.current_frame_idx, self.selected_point + 468]
+                            
+                            # Only add command if position actually changed and we have valid coordinates
+                            if current_x is not None and current_y is not None and (abs(start_x - current_x) > 0 or abs(start_y - current_y) > 0):
+                                # Create the appropriate command
+                                command = KeypointCommand(
+                                    self,
+                                    self.current_frame_idx,
                                     self.selected_point,
                                     start_x, start_y,
                                     current_x, current_y
                                 )
+                                self.add_command(command)
                         except (AttributeError, IndexError, TypeError) as e:
                             print(f"Warning: Could not create move command: {e}")
                         
@@ -902,7 +948,16 @@ class PoseEditor(QMainWindow):
         category = self._current_keypoint_type
         
         if category == "Body" and self.pose_data is not None:
-            return self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+            # Check if we have 3 values per point (x, y, visibility) or just 2 (x, y)
+            total_columns = self.pose_data.shape[1]
+            
+            if total_columns % 3 == 0:  # If we have visibility data (x, y, v) format
+                # Extract just x and y coordinates, ignore visibility
+                x_cols = self.pose_data.iloc[self.current_frame_idx, 0:total_columns:3].values
+                y_cols = self.pose_data.iloc[self.current_frame_idx, 1:total_columns:3].values
+                return np.column_stack((x_cols, y_cols))
+            else:  # Simple (x, y) format
+                return self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
         elif category == "Left Hand" and self.hand_data_left is not None:
             # Extract x and y coordinates from the dataframe
             left_hand_x = self.hand_data_left.iloc[self.current_frame_idx, :21].values
@@ -956,57 +1011,48 @@ class PoseEditor(QMainWindow):
             self.update_plot()
 
     def preview_frame_at_position(self, frame_idx):
-        """Provides a fast preview while dragging the slider"""
-        if hasattr(self, 'cap') and self.cap:
-            # Set frame position
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = self.cap.read()
+        """Display frame at the given index without changing the current frame"""
+        if not hasattr(self, 'cap') or self.cap is None:
+            return False
             
-            if ret:
-                # Store current frame but with reduced processing
-                self.current_frame = frame
-                
-                # Use simplified frame display for better performance during dragging
-                frame_preview = frame.copy()
-                
-                # Convert to black and white if needed (this is fast)
-                if self.black_and_white:
-                    frame_preview = cv2.cvtColor(frame_preview, cv2.COLOR_BGR2GRAY)
-                    frame_preview = cv2.cvtColor(frame_preview, cv2.COLOR_GRAY2RGB)
-                
-                # Add keypoints with simplified rendering
-                if self.pose_data is not None:
-                    # Update current pose data for this frame
-                    self.current_pose = self.pose_data.iloc[frame_idx].values.reshape(-1, 2)
-                    
-                    # Draw simplified keypoints (faster)
-                    for i, point in enumerate(self.current_pose):
-                        # Use uniform color and size during dragging for speed
-                        cv2.circle(frame_preview, (int(point[0]), int(point[1])), 5, (0, 255, 0), -1)
-                
-                # Convert to QPixmap with fast transformation
-                frame_rgb = cv2.cvtColor(frame_preview, cv2.COLOR_BGR2RGB)
-                height, width, channel = frame_rgb.shape
-                bytes_per_line = 3 * width
-                q_img = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
-                pixmap = QPixmap.fromImage(q_img)
-                
-                # Scale with fast transformation
-                scaled_width = int(pixmap.width() * self.zoom_level)
-                scaled_height = int(pixmap.height() * self.zoom_level)
-                scaled_pixmap = pixmap.scaled(
-                    scaled_width, 
-                    scaled_height,
-                    Qt.KeepAspectRatio,
-                    Qt.FastTransformation  # Always use fast transformation during dragging
-                )
-                
-                # Update display
-                self.label.setPixmap(scaled_pixmap)
-                self.label.setFixedSize(scaled_width, scaled_height)
-                
-                # Update coordinates display
-                self.update_coordinate_inputs()
+        if frame_idx < 0 or frame_idx >= int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)):
+            return False
+            
+        # Set position
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, preview_frame = self.cap.read()
+        
+        if not ret:
+            return False
+            
+        # Store the current frame
+        self.current_frame = preview_frame
+        self.current_frame_idx = frame_idx
+        
+        # Update data about current frame
+        if hasattr(self, 'pose_data') and self.pose_data is not None and frame_idx < len(self.pose_data):
+            # Check if we have 3 values per point (x, y, visibility) or just 2 (x, y)
+            total_columns = self.pose_data.shape[1]
+            
+            if total_columns % 3 == 0:  # If we have visibility data (x, y, v) format
+                num_points = total_columns // 3
+                # Extract just x and y coordinates, ignore visibility
+                x_coords = self.pose_data.iloc[frame_idx, [i*3 for i in range(num_points)]].values
+                y_coords = self.pose_data.iloc[frame_idx, [i*3+1 for i in range(num_points)]].values
+                self.current_pose = np.column_stack((x_coords, y_coords))
+            else:  # Simple (x, y) format
+                self.current_pose = self.pose_data.iloc[frame_idx].values.reshape(-1, 2)
+        
+        # Display the current frame
+        self.display_frame()
+        
+        # Update coordinate inputs
+        self.update_coordinate_inputs()
+        
+        # Update trajectory plot if needed
+        self.update_plot()
+        
+        return True
 
     def on_slider_pressed(self):
         # Pause playback if we're scrubbing with the slider
@@ -1705,8 +1751,8 @@ class PoseEditor(QMainWindow):
 
     def detect_pose_current_frame(self):
         """Detect pose on the current frame using selected MediaPipe models"""
-        if self.current_frame is None:
-            QMessageBox.warning(self, "No Frame", "Please load a video first.")
+        if not hasattr(self, 'current_frame') or self.current_frame is None:
+            QMessageBox.warning(self, "No Frame", "No current frame to process.")
             return
         
         # Get selected models
@@ -1715,17 +1761,21 @@ class PoseEditor(QMainWindow):
         if models is None:
             QMessageBox.warning(self, "No Model Selected", "Please select at least one detection model.")
             return
-            
+        
         try:
-            # Store old data for undo functionality
+            # Store old data for undo
             old_data = {}
-            if self.pose_data is not None:
+            
+            if hasattr(self, 'pose_data') and self.pose_data is not None and self.current_frame_idx < len(self.pose_data):
                 old_data['body'] = self.pose_data.iloc[self.current_frame_idx].copy()
-            if self.hand_data_left is not None:
-                old_data['hand_left'] = self.hand_data_left.iloc[self.current_frame_idx].copy()
-            if self.hand_data_right is not None:
-                old_data['hand_right'] = self.hand_data_right.iloc[self.current_frame_idx].copy()
-            if self.face_data is not None:
+            
+            if hasattr(self, 'left_hand_data') and self.left_hand_data is not None and self.current_frame_idx < len(self.left_hand_data):
+                old_data['left_hand'] = self.left_hand_data.iloc[self.current_frame_idx].copy()
+            
+            if hasattr(self, 'right_hand_data') and self.right_hand_data is not None and self.current_frame_idx < len(self.right_hand_data):
+                old_data['right_hand'] = self.right_hand_data.iloc[self.current_frame_idx].copy()
+            
+            if hasattr(self, 'face_data') and self.face_data is not None and self.current_frame_idx < len(self.face_data):
                 old_data['face'] = self.face_data.iloc[self.current_frame_idx].copy()
             
             # Results dict to store all detection results
@@ -1735,7 +1785,11 @@ class PoseEditor(QMainWindow):
             # Body detection
             if models["body"]:
                 # Set model complexity based on selection
-                model_complexity = 2 if "Large" in models["body"] else 1
+                model_complexity = 0  # Default to small
+                if "Medium" in models["body"]:
+                    model_complexity = 1
+                elif "Large" in models["body"]:
+                    model_complexity = 2
                 
                 # Detect body landmarks
                 landmarks_list, body_annotated = get_pose_landmarks_from_frame(
@@ -1752,16 +1806,19 @@ class PoseEditor(QMainWindow):
             # Hand detection
             if models["hand"]:
                 # Call hand detection function
-                left_hand, right_hand, hand_annotated = get_hand_landmarks_from_frame(self.current_frame)
+                left_landmarks, right_landmarks, hand_annotated = get_hand_landmarks_from_frame(self.current_frame)
                 
-                if left_hand:
-                    results['left_hand'] = left_hand
-                if right_hand: 
-                    results['right_hand'] = right_hand
-                    
-                # Use annotated frame if body wasn't detected
-                if not models["body"] or 'body' not in results:
-                    annotated_frame = hand_annotated
+                if left_landmarks or right_landmarks:
+                    results['left_hand'] = left_landmarks
+                    results['right_hand'] = right_landmarks
+                    # If no body detection, use hand annotated frame
+                    if 'body' not in results:
+                        annotated_frame = hand_annotated
+                    else:
+                        # Overlay hand landmarks on body frame
+                        # This is a simple overlay, might not be ideal for all cases
+                        alpha = 0.5
+                        annotated_frame = cv2.addWeighted(annotated_frame, alpha, hand_annotated, 1-alpha, 0)
             
             # Face detection
             if models["face"]:
@@ -1770,30 +1827,81 @@ class PoseEditor(QMainWindow):
                 
                 if face_landmarks:
                     results['face'] = face_landmarks
-                    
-                # Use annotated frame if no other detections
-                if (not models["body"] or 'body' not in results) and (not models["hand"] or ('left_hand' not in results and 'right_hand' not in results)):
-                    annotated_frame = face_annotated
+                    # If no previous detections, use face annotated frame
+                    if 'body' not in results and 'left_hand' not in results and 'right_hand' not in results:
+                        annotated_frame = face_annotated
+                    else:
+                        # Overlay face landmarks on previous frame
+                        alpha = 0.5
+                        annotated_frame = cv2.addWeighted(annotated_frame, alpha, face_annotated, 1-alpha, 0)
             
-            # Process all results
-            models_run = self._process_detection_results(self.current_frame_idx, results)
+            # Update data with detection results
+            new_data = {}
             
-            if models_run:
-                # Update the UI
-                self._needs_redraw = True
-                self.display_frame()
-                self.update_coordinate_inputs()
-                self.update_plot()
+            # Update pose data if detected
+            if 'body' in results and hasattr(self, 'pose_data') and self.pose_data is not None:
+                # Create a flattened list for RR21 format
+                rr21_data = results['body']
                 
-                # Show success message
-                QMessageBox.information(self, "Detection Complete", 
-                                      f"Successfully detected: {', '.join(models_run)}")
-            else:
-                QMessageBox.warning(self, "Detection Failed", 
-                                  "No landmarks detected with the selected models.")
+                # Convert to columns for DataFrame
+                keypoints = SUPPORTED_FORMATS["rr21"]
+                
+                for i, kp in enumerate(keypoints):
+                    if i*3+2 < len(rr21_data):
+                        self.pose_data.loc[self.current_frame_idx, f'{kp}_X'] = rr21_data[i*3]
+                        self.pose_data.loc[self.current_frame_idx, f'{kp}_Y'] = rr21_data[i*3+1]
+                        self.pose_data.loc[self.current_frame_idx, f'{kp}_V'] = rr21_data[i*3+2]
+                
+                new_data['body'] = self.pose_data.iloc[self.current_frame_idx].copy()
+            
+            # Update hand data if detected
+            if 'left_hand' in results and hasattr(self, 'left_hand_data') and self.left_hand_data is not None:
+                left_landmarks = results['left_hand']
+                
+                for i in range(21):  # MediaPipe tracks 21 hand landmarks
+                    if i*2+1 < len(left_landmarks):
+                        self.left_hand_data.loc[self.current_frame_idx, f'HandL_{i}_X'] = left_landmarks[i*2]
+                        self.left_hand_data.loc[self.current_frame_idx, f'HandL_{i}_Y'] = left_landmarks[i*2+1]
+                
+                new_data['left_hand'] = self.left_hand_data.iloc[self.current_frame_idx].copy()
+            
+            if 'right_hand' in results and hasattr(self, 'right_hand_data') and self.right_hand_data is not None:
+                right_landmarks = results['right_hand']
+                
+                for i in range(21):  # MediaPipe tracks 21 hand landmarks
+                    if i*2+1 < len(right_landmarks):
+                        self.right_hand_data.loc[self.current_frame_idx, f'HandR_{i}_X'] = right_landmarks[i*2]
+                        self.right_hand_data.loc[self.current_frame_idx, f'HandR_{i}_Y'] = right_landmarks[i*2+1]
+                
+                new_data['right_hand'] = self.right_hand_data.iloc[self.current_frame_idx].copy()
+            
+            # Update face data if detected
+            if 'face' in results and hasattr(self, 'face_data') and self.face_data is not None:
+                face_landmarks = results['face']
+                
+                for i in range(468):  # MediaPipe tracks 468 face landmarks
+                    if i*2+1 < len(face_landmarks):
+                        self.face_data.loc[self.current_frame_idx, f'Face_{i}_X'] = face_landmarks[i*2]
+                        self.face_data.loc[self.current_frame_idx, f'Face_{i}_Y'] = face_landmarks[i*2+1]
+                
+                new_data['face'] = self.face_data.iloc[self.current_frame_idx].copy()
+            
+            # Add command for undo/redo
+            if new_data:
+                cmd = MediaPipeDetectionCommand(self, self.current_frame_idx, old_data, new_data)
+                self.undo_stack.push(cmd)
+            
+            # Display annotated frame
+            self.display_frame(annotated_frame)
+            
+            # Refresh GUI with updated data
+            self.update_coordinate_inputs()
+            self.update_plot()
             
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"An error occurred during detection: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Error detecting pose: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def detect_pose_video(self):
         """Detect pose on the entire video using selected MediaPipe models"""
@@ -1822,19 +1930,22 @@ class PoseEditor(QMainWindow):
             if models["body"]:
                 progress.setLabelText("Processing video with MediaPipe Pose...")
                 # Set model complexity based on selection
-                model_complexity = 2 if "Large" in models["body"] else 1
+                model_complexity = 0  # Default to small (was incorrectly set to 2)
+                if "Medium" in models["body"]:
+                    model_complexity = 1
+                elif "Large" in models["body"]:
+                    model_complexity = 2
                 
-                # Process video
-                new_pose_data, success = process_video_with_mediapipe(
+                # Process video with selected complexity
+                pose_data, success = process_video_with_mediapipe(
                     self.video_path, 
                     progress_dialog=progress,
                     model_complexity=model_complexity
                 )
                 
-                if success and new_pose_data is not None:
-                    self.pose_data = new_pose_data
-                    
-                    # Update keypoint names
+                if success:
+                    # Update pose data
+                    self.pose_data = pose_data
                     self.keypoint_names = SUPPORTED_FORMATS["rr21"]
                     
                     # Update dropdown
@@ -1844,44 +1955,27 @@ class PoseEditor(QMainWindow):
                     self.keypoint_dropdown.blockSignals(False)
                     
                     models_run.append("Body")
-                
-                # Early exit if canceled
-                if progress.wasCanceled():
-                    progress.close()
-                    QMessageBox.information(self, "Canceled", "Video processing was canceled.")
-                    return
             
             # Hand detection
             if models["hand"]:
-                progress.setValue(0)  # Reset progress
                 progress.setLabelText("Processing video with MediaPipe Hands...")
                 
                 # Process video for hands
-                hand_left_data, hand_right_data, success = process_video_with_mediapipe_hands(
+                left_hand_data, right_hand_data, success = process_video_with_mediapipe_hands(
                     self.video_path, 
                     progress_dialog=progress
                 )
                 
                 if success:
-                    if hand_left_data is not None:
-                        self.hand_data_left = hand_left_data
-                        self.hand_detection_enabled = True
-                        models_run.append("Left Hand")
-                        
-                    if hand_right_data is not None:
-                        self.hand_data_right = hand_right_data
-                        self.hand_detection_enabled = True
-                        models_run.append("Right Hand")
-                
-                # Early exit if canceled
-                if progress.wasCanceled():
-                    progress.close()
-                    QMessageBox.information(self, "Canceled", "Video processing was canceled.")
-                    return
+                    # Update hand data
+                    self.hand_data_left = left_hand_data
+                    self.hand_data_right = right_hand_data
+                    self.hand_detection_enabled = True
+                    
+                    models_run.append("Hands")
             
             # Face detection
             if models["face"]:
-                progress.setValue(0)  # Reset progress
                 progress.setLabelText("Processing video with MediaPipe Face...")
                 
                 # Process video for face
@@ -1890,39 +1984,43 @@ class PoseEditor(QMainWindow):
                     progress_dialog=progress
                 )
                 
-                if success and face_data is not None:
+                if success:
+                    # Update face data
                     self.face_data = face_data
                     self.face_detection_enabled = True
+                    
                     models_run.append("Face")
             
-            # Make sure to close the progress dialog
-            progress.setValue(100)
+            # Close progress dialog
             progress.close()
             
-            if not models_run:
-                QMessageBox.warning(self, "Processing Failed", 
-                                  "MediaPipe couldn't detect any landmarks with the selected models.")
-                return
-            
-            # Update current pose
-            if self.pose_data is not None:
-                self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
-            
             # Update display
-            self._needs_redraw = True
-            self.display_frame()
-            self.update_coordinate_inputs()
-            self.update_plot()
-            
-            # Show success message
-            QMessageBox.information(self, "Detection Complete", 
-                                  f"Successfully processed video with: {', '.join(models_run)}")
-            
+            if models_run:
+                self._needs_redraw = True
+                self.display_frame()
+                self.update_coordinate_inputs()
+                self.update_plot()
+                
+                QMessageBox.information(
+                    self, 
+                    "Processing Complete", 
+                    f"Successfully processed video with the following models: {', '.join(models_run)}"
+                )
+            else:
+                QMessageBox.warning(
+                    self, 
+                    "Processing Failed", 
+                    "No models were successfully processed. Please check the video file and try again."
+                )
+        
         except Exception as e:
-            # Close progress dialog if it's still open during an exception
+            # Close progress dialog if open
             if 'progress' in locals() and progress is not None:
                 progress.close()
-            QMessageBox.critical(self, "Error", f"An error occurred during video processing: {str(e)}")
+            
+            QMessageBox.critical(self, "Error", f"Error processing video: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def rotate_video(self):
         """Rotate the video display by 90 degrees clockwise"""
@@ -2062,7 +2160,7 @@ class PoseEditor(QMainWindow):
             # Pass other key events to parent class
             super().keyPressEvent(event)
 
-    def display_frame(self):
+    def display_frame(self, frame=None):
         """Render and display the current frame with all appropriate transformations"""
         if self.current_frame is None:
             return
@@ -2071,9 +2169,14 @@ class PoseEditor(QMainWindow):
         cached_frame_idx = getattr(self, '_cached_frame_idx', -999)
         needs_redraw = getattr(self, '_needs_redraw', True)
         
-        if not hasattr(self, '_cached_frame') or cached_frame_idx != self.current_frame_idx or needs_redraw:
-            # Start with a fresh copy of the current frame
-            frame = self.current_frame.copy()
+        if frame is not None or not hasattr(self, '_cached_frame') or cached_frame_idx != self.current_frame_idx or needs_redraw:
+            # Start with a fresh copy of the provided frame or the current frame
+            if frame is not None:
+                # Use the provided frame (like an annotated frame from detection)
+                frame = frame.copy()
+            else:
+                # Use the current frame
+                frame = self.current_frame.copy()
             
             # Apply black and white transformation if enabled
             if self.black_and_white:
@@ -2085,105 +2188,37 @@ class PoseEditor(QMainWindow):
             
             # Draw body keypoints
             if category == "Body" and self.pose_data is not None:
-                self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
-                for i, point in enumerate(self.current_pose):
-                    radius = 8 if i == self.selected_point else 5
-                    # Blue for selected, yellow for hovered, green for normal
-                    if i == self.selected_point:
-                        color = (255, 0, 0)  # Blue (selected)
-                    elif i == self._hovered_point:
-                        color = (0, 255, 255)  # Yellow (hovered)
-                    else:
-                        color = (0, 255, 0)  # Green (normal)
-                    cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+                try:
+                    # Check if we have 3 values per point (x, y, visibility) or just 2 (x, y)
+                    total_columns = self.pose_data.shape[1]
+                    points_count = total_columns // 2 if total_columns % 2 == 0 else total_columns // 3
+                    
+                    # Reshape correctly based on data format
+                    if total_columns % 3 == 0:  # If we have visibility data (x, y, v) format
+                        # Extract just x and y, ignore visibility
+                        x_cols = self.pose_data.iloc[self.current_frame_idx, 0:total_columns:3]
+                        y_cols = self.pose_data.iloc[self.current_frame_idx, 1:total_columns:3]
+                        self.current_pose = np.column_stack((x_cols, y_cols))
+                    else:  # Simple (x, y) format
+                        self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+                    
+                    for i, point in enumerate(self.current_pose):
+                        radius = 8 if i == self.selected_point else 5
+                        # Blue for selected, yellow for hovered, green for normal
+                        if i == self.selected_point:
+                            color = (255, 0, 0)  # Blue (selected)
+                        elif i == self._hovered_point:
+                            color = (0, 255, 255)  # Yellow (hovered)
+                        else:
+                            color = (0, 255, 0)  # Green (normal)
+                        cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+                except Exception as e:
+                    print(f"Error drawing body keypoints: {e}")
             
             # Draw hand landmarks if available
-            elif category == "Left Hand" and self.hand_data_left is not None:
-                try:
-                    # Get data for current frame
-                    left_hand_x = self.hand_data_left.iloc[self.current_frame_idx, :21].values
-                    left_hand_y = self.hand_data_left.iloc[self.current_frame_idx, 21:].values
-                    
-                    # Draw connections between landmarks
-                    mp_hands = mp.solutions.hands
-                    for connection in mp_hands.HAND_CONNECTIONS:
-                        idx1, idx2 = connection
-                        x1, y1 = int(left_hand_x[idx1]), int(left_hand_y[idx1])
-                        x2, y2 = int(left_hand_x[idx2]), int(left_hand_y[idx2])
-                        # Check if points are valid (non-zero)
-                        if (x1 > 0 or y1 > 0) and (x2 > 0 or y2 > 0):
-                            cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
-                    
-                    # Draw each landmark
-                    for i in range(21):
-                        x, y = int(left_hand_x[i]), int(left_hand_y[i])
-                        if x > 0 or y > 0:  # Only draw if point is valid
-                            radius = 8 if i == self.selected_point else 5
-                            if i == self.selected_point:
-                                color = (255, 0, 0)  # Blue (selected)
-                            elif i == self._hovered_point:
-                                color = (0, 255, 255)  # Yellow (hovered)
-                            else:
-                                color = (0, 255, 255)  # Cyan (normal for left hand)
-                            cv2.circle(frame, (x, y), radius, color, -1)
-                except Exception as e:
-                    print(f"Error drawing left hand: {e}")
+            # ... existing code ...
             
-            # Draw right hand landmarks
-            elif category == "Right Hand" and self.hand_data_right is not None:
-                try:
-                    # Get data for current frame
-                    right_hand_x = self.hand_data_right.iloc[self.current_frame_idx, :21].values
-                    right_hand_y = self.hand_data_right.iloc[self.current_frame_idx, 21:].values
-                    
-                    # Draw connections between landmarks
-                    mp_hands = mp.solutions.hands
-                    for connection in mp_hands.HAND_CONNECTIONS:
-                        idx1, idx2 = connection
-                        x1, y1 = int(right_hand_x[idx1]), int(right_hand_y[idx1])
-                        x2, y2 = int(right_hand_x[idx2]), int(right_hand_y[idx2])
-                        # Check if points are valid (non-zero)
-                        if (x1 > 0 or y1 > 0) and (x2 > 0 or y2 > 0):
-                            cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
-                    
-                    # Draw each landmark
-                    for i in range(21):
-                        x, y = int(right_hand_x[i]), int(right_hand_y[i])
-                        if x > 0 or y > 0:  # Only draw if point is valid
-                            radius = 8 if i == self.selected_point else 5
-                            if i == self.selected_point:
-                                color = (255, 0, 0)  # Blue (selected)
-                            elif i == self._hovered_point:
-                                color = (0, 255, 255)  # Yellow (hovered)
-                            else:
-                                color = (255, 0, 255)  # Magenta (normal for right hand)
-                            cv2.circle(frame, (x, y), radius, color, -1)
-                except Exception as e:
-                    print(f"Error drawing right hand: {e}")
-                    
-            # Draw face landmarks
-            elif category == "Face" and self.face_data is not None:
-                try:
-                    # Get data for current frame
-                    face_x = self.face_data.iloc[self.current_frame_idx, :468].values
-                    face_y = self.face_data.iloc[self.current_frame_idx, 468:].values
-                    
-                    # Draw each facial landmark
-                    for i in range(468):
-                        x, y = int(face_x[i]), int(face_y[i])
-                        if x > 0 or y > 0:  # Only draw if point is valid
-                            radius = 5 if i == self.selected_point else 2
-                            if i == self.selected_point:
-                                color = (255, 0, 0)  # Blue (selected)
-                            elif i == self._hovered_point:
-                                color = (0, 255, 255)  # Yellow (hovered)
-                            else:
-                                color = (255, 255, 0)  # Yellow (normal for face)
-                            cv2.circle(frame, (x, y), radius, color, -1)
-                except Exception as e:
-                    print(f"Error drawing face: {e}")
-            
-            # Always draw other keypoint categories in the background with less visibility
+            # Always draw other keypoint categories in the background with reduced visibility
             self._draw_background_keypoints(frame)
             
             # Apply rotation if needed
@@ -2260,6 +2295,50 @@ class PoseEditor(QMainWindow):
                 pass
         
         # Don't draw face in background - too many points
+
+    def get_exact_keypoint_at_position(self, pos):
+        """
+        Get the exact keypoint at the given position without any mapping confusion.
+        Returns a tuple (category, index, point_data) of the keypoint under the cursor.
+        """
+        category = self._current_keypoint_type
+        detect_radius = 10 / self.zoom_level
+        
+        # Check body keypoints first regardless of current category
+        if self.pose_data is not None:
+            pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+            for i, point in enumerate(pose):
+                if np.linalg.norm(np.array([point[0], point[1]]) - np.array([pos.x(), pos.y()])) < detect_radius:
+                    return "Body", i, point
+        
+        # Check left hand keypoints
+        if self.hand_data_left is not None:
+            left_hand_x = self.hand_data_left.iloc[self.current_frame_idx, :21].values
+            left_hand_y = self.hand_data_left.iloc[self.current_frame_idx, 21:].values
+            for i in range(len(left_hand_x)):
+                point = [left_hand_x[i], left_hand_y[i]]
+                if np.linalg.norm(np.array(point) - np.array([pos.x(), pos.y()])) < detect_radius:
+                    return "Left Hand", i, point
+        
+        # Check right hand keypoints
+        if self.hand_data_right is not None:
+            right_hand_x = self.hand_data_right.iloc[self.current_frame_idx, :21].values
+            right_hand_y = self.hand_data_right.iloc[self.current_frame_idx, 21:].values
+            for i in range(len(right_hand_x)):
+                point = [right_hand_x[i], right_hand_y[i]]
+                if np.linalg.norm(np.array(point) - np.array([pos.x(), pos.y()])) < detect_radius:
+                    return "Right Hand", i, point
+        
+        # Check face keypoints
+        if self.face_data is not None:
+            face_x = self.face_data.iloc[self.current_frame_idx, :468].values
+            face_y = self.face_data.iloc[self.current_frame_idx, 468:].values
+            for i in range(len(face_x)):
+                point = [face_x[i], face_y[i]]
+                if np.linalg.norm(np.array(point) - np.array([pos.x(), pos.y()])) < detect_radius:
+                    return "Face", i, point
+        
+        return None, None, None
 
 def main():
     """
