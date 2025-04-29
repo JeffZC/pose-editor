@@ -2,7 +2,8 @@ import cv2
 import mediapipe as mp
 import pandas as pd
 import numpy as np
-from .body_format import SUPPORTED_FORMATS, create_empty_pose_dataframe
+import time
+from .body_keypoints import SUPPORTED_FORMATS, create_empty_pose_keypoints, process_mediapipe_to_rr21
 
 # Initialize MediaPipe Pose and other components
 mp_pose = mp.solutions.pose
@@ -17,45 +18,43 @@ def get_pose_landmarks_from_frame(frame, model_complexity=2):
     
     Args:
         frame: OpenCV frame (BGR)
-        model_complexity: MediaPipe pose model complexity (0=small, 1=medium, 2=large)
+        model_complexity: Model complexity (0=Lite, 1=Full, 2=Heavy)
     
     Returns:
-        tuple: (landmarks_list as flat [x1,y1,x2,y2...], annotated_frame)
+        tuple: (landmarks_list, annotated_frame)
     """
+    image = frame.copy()
     with mp_pose.Pose(
         static_image_mode=True,
         model_complexity=model_complexity,
-        enable_segmentation=False,
         min_detection_confidence=0.5) as pose:
         
-        # Convert to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Convert to RGB for MediaPipe
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
-        # Process frame
-        results = pose.process(frame_rgb)
+        # Process the image
+        results = pose.process(image_rgb)
         
         if not results.pose_landmarks:
-            return [], frame
+            # No pose detected
+            return None, image
         
-        # Create a copy for annotations
+        # Create annotated image for visualization
         annotated_frame = frame.copy()
-        
-        # Draw the pose annotation on the image.
         mp_drawing.draw_landmarks(
             annotated_frame,
             results.pose_landmarks,
             mp_pose.POSE_CONNECTIONS,
             landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style())
         
-        # Extract landmarks as flat list [x1,y1,x2,y2...]
+        # Extract landmarks as flat list [x1,y1,v1,x2,y2,v2...]
         landmarks_list = []
         h, w, _ = frame.shape
         
-        # Extract both coordinates and visibility
+        # Extract coordinates and visibility
         for landmark in results.pose_landmarks.landmark:
-            # Normalize coordinates to image dimensions
-            landmarks_list.append(landmark.x * w)
-            landmarks_list.append(landmark.y * h)
+            landmarks_list.append(landmark.x)
+            landmarks_list.append(landmark.y)
             landmarks_list.append(landmark.visibility)
         
         # Convert to RR21 format with proper scaling
@@ -63,12 +62,13 @@ def get_pose_landmarks_from_frame(frame, model_complexity=2):
         
         return rr21_landmarks, annotated_frame
 
-def get_hand_landmarks_from_frame(frame):
+def get_hand_landmarks_from_frame(frame, min_detection_confidence=0.5):
     """
     Detect hand landmarks for a single frame using MediaPipe
     
     Args:
         frame: OpenCV frame (BGR)
+        min_detection_confidence: Detection confidence threshold
     
     Returns:
         tuple: (left_hand_landmarks, right_hand_landmarks, annotated_frame)
@@ -76,7 +76,7 @@ def get_hand_landmarks_from_frame(frame):
     with mp_hands.Hands(
         static_image_mode=True,
         max_num_hands=2,
-        min_detection_confidence=0.5) as hands:
+        min_detection_confidence=min_detection_confidence) as hands:
         
         # Convert to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -123,12 +123,13 @@ def get_hand_landmarks_from_frame(frame):
         
         return left_landmarks, right_landmarks, annotated_frame
 
-def get_face_landmarks_from_frame(frame):
+def get_face_landmarks_from_frame(frame, min_detection_confidence=0.5):
     """
     Detect face landmarks for a single frame using MediaPipe
     
     Args:
         frame: OpenCV frame (BGR)
+        min_detection_confidence: Detection confidence threshold
     
     Returns:
         tuple: (face_landmarks, annotated_frame)
@@ -136,7 +137,8 @@ def get_face_landmarks_from_frame(frame):
     with mp_face_mesh.FaceMesh(
         static_image_mode=True,
         max_num_faces=1,
-        min_detection_confidence=0.5) as face_mesh:
+        refine_landmarks=True,
+        min_detection_confidence=min_detection_confidence) as face_mesh:
         
         # Convert to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -153,9 +155,9 @@ def get_face_landmarks_from_frame(frame):
         # Draw face landmarks
         for face_landmarks in results.multi_face_landmarks:
             mp_drawing.draw_landmarks(
-                annotated_frame,
-                face_landmarks,
-                mp_face_mesh.FACEMESH_TESSELATION,
+                image=annotated_frame,
+                landmark_list=face_landmarks,
+                connections=mp_face_mesh.FACEMESH_TESSELATION,
                 landmark_drawing_spec=None,
                 connection_drawing_spec=mp_drawing_styles
                 .get_default_face_mesh_tesselation_style())
@@ -170,250 +172,301 @@ def get_face_landmarks_from_frame(frame):
         
         return landmarks, annotated_frame
 
+def process_frame_with_mediapipe_all(frame, model_complexity=1, min_detection_confidence=0.5, min_tracking_confidence=0.5):
+    """Process single frame with Pose, Hands, and Face sequentially."""
+    annotated_frame = frame.copy()
+    results = {}
+    # Pose
+    landmarks_list, body_annotated = get_pose_landmarks_from_frame(frame, model_complexity=model_complexity)
+    if landmarks_list:
+        results['body'] = process_mediapipe_to_rr21(landmarks_list)
+        annotated_frame = body_annotated
+    # Hands
+    left_landmarks, right_landmarks, hand_annotated = get_hand_landmarks_from_frame(frame, min_detection_confidence)
+    if left_landmarks or right_landmarks:
+        results['left_hand'] = left_landmarks
+        results['right_hand'] = right_landmarks
+        alpha = 0.5
+        if 'body' not in results:
+            annotated_frame = hand_annotated
+        else:
+            annotated_frame = cv2.addWeighted(annotated_frame, alpha, hand_annotated, 1-alpha, 0)
+    # Face
+    face_landmarks, face_annotated = get_face_landmarks_from_frame(frame, min_detection_confidence)
+    if face_landmarks:
+        results['face'] = face_landmarks
+        alpha = 0.5
+        if not any(k in results for k in ['body','left_hand','right_hand']):
+            annotated_frame = face_annotated
+        else:
+            annotated_frame = cv2.addWeighted(annotated_frame, alpha, face_annotated, 1-alpha, 0)
+    return results, annotated_frame
+
 def process_video_with_mediapipe(video_path, progress_dialog=None, model_complexity=1):
     """
-    Process an entire video with MediaPipe pose detection
+    Process a video with MediaPipe Pose and extract pose landmarks
     
     Args:
         video_path: Path to the video file
-        progress_dialog: Optional PyQt progress dialog
-        model_complexity: MediaPipe pose model complexity (0=small, 1=medium, 2=large)
-    
+        progress_dialog: Progress dialog for UI feedback
+        model_complexity: Model complexity (0=Lite, 1=Full, 2=Heavy)
+        
     Returns:
-        tuple: (DataFrame with pose data in RR21 format, success flag)
+        tuple: (pose_dataframe, success_flag)
     """
     try:
-        # Open video file
+        # Initialize video capture
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
+            print(f"Error: Could not open video at {video_path}")
             return None, False
         
         # Get video properties
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         
-        # Initialize pose detector
+        # Create empty DataFrame for RR21 format
+        pose_data = create_empty_pose_keypoints(frame_count, "rr21").to_dataframe()
+        
+        # Initialize MediaPipe pose
         with mp_pose.Pose(
             static_image_mode=False,
             model_complexity=model_complexity,
-            smooth_landmarks=True,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5) as pose:
             
-            # Create empty DataFrame for MediaPipe format
-            mediapipe_keypoints = [
-                'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 
-                'RIGHT_EYE_INNER', 'RIGHT_EYE', 'RIGHT_EYE_OUTER',
-                'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT', 'MOUTH_RIGHT',
-                'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY', 'RIGHT_PINKY',
-                'LEFT_INDEX', 'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB',
-                'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE',
-                'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL', 'RIGHT_HEEL',
-                'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-            ]
+            # Process each frame
+            current_frame = 0
+            start_time = time.time()
             
-            # Create columns for each keypoint
-            column_names = []
-            for name in mediapipe_keypoints:
-                column_names.extend([f'{name}_X', f'{name}_Y', f'{name}_V'])
-            
-            # Initialize with zeros
-            mp_data = pd.DataFrame(np.zeros((frame_count, len(column_names))), columns=column_names)
-            
-            # Process frames
-            frame_idx = 0
-            pose_detected = False
-            
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
+            while True:
+                # Read frame
+                success, frame = cap.read()
+                if not success:
                     break
                 
-                # Update progress
+                # Update progress dialog
                 if progress_dialog is not None:
-                    progress_percent = min(100, int((frame_idx / frame_count) * 100))
-                    progress_dialog.setValue(progress_percent)
+                    # Calculate progress
+                    progress = min(int(100.0 * current_frame / frame_count), 100)
                     
-                    # Handle cancel button
+                    # Calculate estimated time remaining
+                    elapsed = time.time() - start_time
+                    frames_processed = current_frame + 1
+                    frames_remaining = frame_count - frames_processed
+                    
+                    if frames_processed > 0:
+                        time_per_frame = elapsed / frames_processed
+                        time_left = frames_remaining * time_per_frame
+                        
+                        # Format as minutes:seconds
+                        mins_left = int(time_left // 60)
+                        secs_left = int(time_left % 60)
+                        
+                        current_fps = frames_processed / elapsed if elapsed > 0 else 0
+                        
+                        progress_dialog.setLabelText(
+                            f"Processing video frame {current_frame+1}/{frame_count} "
+                            f"({progress}%, {current_fps:.1f} fps, est. time left: {mins_left}m {secs_left}s)"
+                        )
+                    
+                    progress_dialog.setValue(progress)
+                    
+                    # Check if canceled
                     if progress_dialog.wasCanceled():
-                        break
+                        cap.release()
+                        return None, False
                 
-                # Process frame
+                # Convert to RGB for MediaPipe
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Process the image
                 results = pose.process(frame_rgb)
                 
-                # Extract landmarks if detected
+                # If landmarks detected, update pose data
                 if results.pose_landmarks:
-                    pose_detected = True
-                    h, w, _ = frame.shape
+                    # Extract landmarks as flat list for RR21 conversion
+                    landmarks_list = []
+                    for lm in results.pose_landmarks.landmark:
+                        landmarks_list.extend([lm.x, lm.y, lm.visibility])
+                    rr21_landmarks = process_mediapipe_to_rr21(landmarks_list, frame_width, frame_height)
                     
-                    # Update MediaPipe data
-                    for i, landmark in enumerate(results.pose_landmarks.landmark):
-                        if i < len(mediapipe_keypoints):
-                            kp_name = mediapipe_keypoints[i]
-                            x_col = f"{kp_name}_X"
-                            y_col = f"{kp_name}_Y"
-                            v_col = f"{kp_name}_V"
-                            
-                            mp_data.loc[frame_idx, x_col] = landmark.x * w
-                            mp_data.loc[frame_idx, y_col] = landmark.y * h
-                            mp_data.loc[frame_idx, v_col] = landmark.visibility
+                    # Update pose data for current frame - RR21 format has x, y, visibility for each keypoint
+                    keypoints = SUPPORTED_FORMATS["rr21"]
+                    for i, kp in enumerate(keypoints):
+                        if i*3+2 < len(rr21_landmarks):
+                            pose_data.loc[current_frame, f'{kp}_X'] = rr21_landmarks[i*3]
+                            pose_data.loc[current_frame, f'{kp}_Y'] = rr21_landmarks[i*3+1]
+                            pose_data.loc[current_frame, f'{kp}_V'] = rr21_landmarks[i*3+2]
                 
-                frame_idx += 1
-            
-            # Clean up
-            cap.release()
-            
-            if not pose_detected:
-                return None, False
-            
-            # Convert to RR21 format after processing all frames
-            rr21_data = process_mediapipe_to_rr21(mp_data, frame_width=w, frame_height=h)
-            
-            return rr21_data, True
-            
+                # Move to next frame
+                current_frame += 1
+        
+        # Release the video
+        cap.release()
+        
+        # Final progress update
+        if progress_dialog:
+            progress_dialog.setValue(100)
+        
+        return pose_data, True
+        
     except Exception as e:
-        print(f"Error processing video: {e}")
+        print(f"Error processing video with MediaPipe: {e}")
+        import traceback
+        traceback.print_exc()
         if 'cap' in locals() and cap is not None:
             cap.release()
         return None, False
 
-def process_video_with_mediapipe_hands(video_path, progress_dialog=None):
+def process_video_with_mediapipe_hands(video_path, progress_dialog=None, min_detection_confidence=0.5, min_tracking_confidence=0.5):
     """
-    Process entire video with MediaPipe hands detection
+    Process a video with MediaPipe Hands and extract hand landmarks.
     
     Args:
         video_path: Path to the video file
-        progress_dialog: Optional PyQt progress dialog
-    
+        progress_dialog: PyQt progress dialog
+        min_detection_confidence: MediaPipe detection confidence threshold
+        min_tracking_confidence: MediaPipe tracking confidence threshold
+        
     Returns:
-        tuple: (left_hand_data, right_hand_data, success)
+        Tuple containing left hand data, right hand data, and success flag
     """
     try:
-        # Open video file
+        # Initialize video capture
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
+            print("Error: Could not open video.")
             return None, None, False
-        
+            
         # Get video properties
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Initialize MediaPipe Hands
-        # Create empty DataFrames for hands data
-        left_columns = [f'HandL_{i}_X' for i in range(21)] + [f'HandL_{i}_Y' for i in range(21)]
-        right_columns = [f'HandR_{i}_X' for i in range(21)] + [f'HandR_{i}_Y' for i in range(21)]
+        # Create empty DataFrames for storing hand landmarks
+        left_hand_data, right_hand_data = create_hand_dataframe(frame_count)
         
-        left_hand_data = pd.DataFrame(np.zeros((frame_count, len(left_columns))), columns=left_columns)
-        right_hand_data = pd.DataFrame(np.zeros((frame_count, len(right_columns))), columns=right_columns)
-        
-        # Track if we've detected each hand at least once
-        left_detected = False
-        right_detected = False
-        
-        with mp_hands.Hands(
+        # Initialize MediaPipe hands solution
+        mp_hands = mp.solutions.hands
+        hands = mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=2,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5) as hands:
+            min_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence
+        )
+        
+        # Process each frame
+        frame_idx = 0
+        left_hand_detected = False
+        right_hand_detected = False
+        
+        start_time = time.time()
+        
+        while True:
+            # Read frame
+            ret, frame = cap.read()
+            if not ret:
+                break
             
-            # Process frames
-            frame_idx = 0
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
+            # Update progress
+            if progress_dialog is not None:
+                # Calculate progress
+                progress = min(int(100.0 * frame_idx / frame_count), 100)
                 
-                # Update progress
-                if progress_dialog is not None:
-                    progress_percent = min(100, int((frame_idx / frame_count) * 100))
-                    progress_dialog.setValue(progress_percent)
+                # Calculate FPS and remaining time
+                elapsed = time.time() - start_time
+                if frame_idx > 0 and elapsed > 0:
+                    fps = frame_idx / elapsed
+                    frames_left = frame_count - frame_idx - 1
+                    time_left = frames_left / fps if fps > 0 else 0
                     
-                    # Handle cancel button
-                    if progress_dialog.wasCanceled():
-                        break
-                
-                # Process frame
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = hands.process(frame_rgb)
-                
-                # Extract landmarks if detected
-                if results.multi_hand_landmarks:
-                    h, w, _ = frame.shape
+                    # Format as minutes:seconds
+                    mins_left = int(time_left // 60)
+                    secs_left = int(time_left % 60)
                     
-                    # Process each detected hand
-                    for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
-                        # Determine if left or right hand
-                        handedness = results.multi_handedness[idx].classification[0].label
-                        
-                        # Extract coordinates
-                        landmarks = []
-                        for landmark in hand_landmarks.landmark:
-                            landmarks.append(landmark.x * w)
-                            landmarks.append(landmark.y * h)
-                        
-                        # Update appropriate DataFrame
-                        if handedness == "Left":
-                            left_detected = True
-                            # Update left hand data
-                            for i in range(21):
-                                if i*2+1 < len(landmarks):
-                                    left_hand_data.iloc[frame_idx, i] = landmarks[i*2]        # X
-                                    left_hand_data.iloc[frame_idx, i+21] = landmarks[i*2+1]   # Y
-                        else:  # Right hand
-                            right_detected = True
-                            # Update right hand data
-                            for i in range(21):
-                                if i*2+1 < len(landmarks):
-                                    right_hand_data.iloc[frame_idx, i] = landmarks[i*2]       # X
-                                    right_hand_data.iloc[frame_idx, i+21] = landmarks[i*2+1]  # Y
+                    progress_dialog.setLabelText(
+                        f"Processing hand tracking frame {frame_idx+1}/{frame_count} "
+                        f"({progress}%, {fps:.1f} fps, est. time left: {mins_left}m {secs_left}s)"
+                    )
                 
-                frame_idx += 1
+                progress_dialog.setValue(progress)
+                
+                # Check if canceled
+                if progress_dialog.wasCanceled():
+                    cap.release()
+                    return None, None, False
             
-            # Clean up
-            cap.release()
+            # Convert to RGB for MediaPipe
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Only return data for hands that were detected at least once
-            left_result = left_hand_data if left_detected else None
-            right_result = right_hand_data if right_detected else None
+            # Process frame with MediaPipe
+            results = hands.process(frame_rgb)
             
-            return left_result, right_result, True
+            # Extract hand landmarks if detected
+            if results.multi_hand_landmarks:
+                left_hand, right_hand = extract_hand_landmarks(results, width, height)
+                
+                # Update left hand DataFrame
+                if left_hand:
+                    update_hand_dataframe(left_hand_data, frame_idx, left_hand, True)
+                    left_hand_detected = True
+                    
+                # Update right hand DataFrame
+                if right_hand:
+                    update_hand_dataframe(right_hand_data, frame_idx, right_hand, False)
+                    right_hand_detected = True
             
+            frame_idx += 1
+        
+        cap.release()
+        
+        # Return None for hands that were never detected
+        left_result = left_hand_data if left_hand_detected else None
+        right_result = right_hand_data if right_hand_detected else None
+        
+        # Return True if processing was completed successfully
+        return left_result, right_result, True
+        
     except Exception as e:
-        print(f"Error processing video for hands: {e}")
+        print(f"Error processing video with MediaPipe Hands: {e}")
+        import traceback
+        traceback.print_exc()
         if 'cap' in locals() and cap is not None:
             cap.release()
         return None, None, False
 
-def process_video_with_mediapipe_face(video_path, progress_dialog=None):
+def process_video_with_mediapipe_face(video_path, progress_dialog=None, min_detection_confidence=0.5):
     """
-    Process entire video with MediaPipe face detection
+    Process a video with MediaPipe FaceMesh and extract face landmarks.
     
     Args:
         video_path: Path to the video file
-        progress_dialog: Optional PyQt progress dialog
-    
+        progress_dialog: PyQt progress dialog
+        min_detection_confidence: MediaPipe detection confidence threshold
+        
     Returns:
-        tuple: (face_data, success)
+        Tuple containing face landmarks dataframe and success flag
     """
     try:
-        # Open video file
+        # Initialize video capture
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
+            print("Error: Could not open video.")
             return None, False
-        
+            
         # Get video properties
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
         
-        # Initialize MediaPipe Face Mesh
-        # Number of landmarks in MediaPipe Face Mesh
+        # MediaPipe tracks 468 face landmarks
         num_face_landmarks = 468
         
-        # Create columns for face landmarks
-        face_columns = [f'Face_{i}_X' for i in range(num_face_landmarks)] + [f'Face_{i}_Y' for i in range(num_face_landmarks)]
-        
-        # Create empty DataFrame
-        face_data = pd.DataFrame(np.zeros((frame_count, len(face_columns))), columns=face_columns)
+        # Create empty DataFrame for face landmarks (468 landmarks x 2 coordinates)
+        face_data = pd.DataFrame(index=range(frame_count), 
+                                columns=[f'Face_{i}_{coord}' for i in range(num_face_landmarks) for coord in ['X', 'Y']])
         
         # Track if face was detected at least once
         face_detected = False
@@ -421,11 +474,14 @@ def process_video_with_mediapipe_face(video_path, progress_dialog=None):
         with mp_face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5) as face_mesh:
+            refine_landmarks=True,
+            min_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_detection_confidence) as face_mesh:
             
             # Process frames
             frame_idx = 0
+            start_time = time.time()
+            
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
@@ -433,8 +489,26 @@ def process_video_with_mediapipe_face(video_path, progress_dialog=None):
                 
                 # Update progress
                 if progress_dialog is not None:
-                    progress_percent = min(100, int((frame_idx / frame_count) * 100))
-                    progress_dialog.setValue(progress_percent)
+                    # Calculate progress
+                    progress = min(int(100.0 * frame_idx / frame_count), 100)
+                    
+                    # Calculate FPS and remaining time
+                    elapsed = time.time() - start_time
+                    if frame_idx > 0 and elapsed > 0:
+                        fps = frame_idx / elapsed
+                        frames_left = frame_count - frame_idx - 1
+                        time_left = frames_left / fps if fps > 0 else 0
+                        
+                        # Format as minutes:seconds
+                        mins_left = int(time_left // 60)
+                        secs_left = int(time_left % 60)
+                        
+                        progress_dialog.setLabelText(
+                            f"Processing face tracking frame {frame_idx+1}/{frame_count} "
+                            f"({progress}%, {fps:.1f} fps, est. time left: {mins_left}m {secs_left}s)"
+                        )
+                    
+                    progress_dialog.setValue(progress)
                     
                     # Handle cancel button
                     if progress_dialog.wasCanceled():
@@ -472,225 +546,89 @@ def process_video_with_mediapipe_face(video_path, progress_dialog=None):
         print(f"Error processing video for face: {e}")
         if 'cap' in locals() and cap is not None:
             cap.release()
+        import traceback
+        traceback.print_exc()
         return None, False
-    
-def process_mediapipe_to_rr21(input_data, frame_width=None, frame_height=None):
+
+def extract_hand_landmarks(results, image_width, image_height):
     """
-    Convert MediaPipe pose data to RR21 format.
+    Extract hand landmarks from MediaPipe results
     
     Args:
-        input_data: Either a flat list of landmarks from single frame detection
-                    or a DataFrame in MediaPipe format from video processing
-        frame_width: Width of the video frame for coordinate conversion (optional)
-        frame_height: Height of the video frame for coordinate conversion (optional)
+        results: MediaPipe hands processing results
+        image_width: Width of the frame
+        image_height: Height of the frame
         
     Returns:
-        Either a flat list of landmarks in RR21 format or a DataFrame in RR21 format
+        tuple: (left_hand_landmarks, right_hand_landmarks)
     """
-    # Check if input is a flat list (from single frame detection)
-    if isinstance(input_data, list):
-        # Define mapping from MediaPipe33 indices to RR21 indices
-        # Format: mediapipe_idx: rr21_idx
-        mapping = {
-            0: 0,   # NOSE -> NOSE
-            2: 1,   # LEFT_EYE -> LEFT_EYE
-            5: 2,   # RIGHT_EYE -> RIGHT_EYE
-            7: 3,   # LEFT_EAR -> LEFT_EAR
-            8: 4,   # RIGHT_EAR -> RIGHT_EAR
-            11: 5,  # LEFT_SHOULDER -> LEFT_SHOULDER
-            12: 6,  # RIGHT_SHOULDER -> RIGHT_SHOULDER
-            13: 7,  # LEFT_ELBOW -> LEFT_ELBOW
-            14: 8,  # RIGHT_ELBOW -> RIGHT_ELBOW
-            15: 9,  # LEFT_WRIST -> LEFT_WRIST
-            16: 10, # RIGHT_WRIST -> RIGHT_WRIST
-            23: 11, # LEFT_HIP -> LEFT_HIP
-            24: 12, # RIGHT_HIP -> RIGHT_HIP
-            25: 13, # LEFT_KNEE -> LEFT_KNEE
-            26: 14, # RIGHT_KNEE -> RIGHT_KNEE
-            27: 15, # LEFT_ANKLE -> LEFT_ANKLE
-            28: 16, # RIGHT_ANKLE -> RIGHT_ANKLE
-            29: 17, # LEFT_HEEL -> LEFT_HEEL
-            30: 18, # RIGHT_HEEL -> RIGHT_HEEL
-            31: 19, # LEFT_FOOT_INDEX -> LEFT_FOOT
-            32: 20  # RIGHT_FOOT_INDEX -> RIGHT_FOOT
-        }
+    left_hand = None
+    right_hand = None
+    
+    # Process each detected hand
+    for i, hand_landmarks in enumerate(results.multi_hand_landmarks):
+        # Get handedness (left or right)
+        handedness = results.multi_handedness[i].classification[0].label
         
-        # Create RR21 landmarks array (x, y, visibility) for 21 keypoints
-        rr21_landmarks = np.zeros(21 * 3)
-        
-        # Check if we have a flat list with 33 landmarks (x,y,z,visibility) = 132 values
-        # or 33 landmarks (x,y,visibility) = 99 values
-        landmarks_per_point = 3  # Default: (x, y, visibility)
-        if len(input_data) >= 132:  # Full 3D landmarks
-            landmarks_per_point = 4  # (x, y, z, visibility)
-        
-        # Copy coordinates from MediaPipe to RR21
-        for mp_idx, rr_idx in mapping.items():
-            # Calculate source indices in the flat list
-            src_x_idx = mp_idx * landmarks_per_point
-            src_y_idx = mp_idx * landmarks_per_point + 1
-            src_v_idx = mp_idx * landmarks_per_point + (landmarks_per_point - 1)  # Visibility is last
+        # Extract landmarks as flat list [x1, y1, x2, y2, ...]
+        landmarks = []
+        for landmark in hand_landmarks.landmark:
+            # Convert normalized coordinates to pixel coordinates
+            x = landmark.x * image_width
+            y = landmark.y * image_height
             
-            # Calculate destination indices in the RR21 array
-            dst_x_idx = rr_idx * 3
-            dst_y_idx = rr_idx * 3 + 1
-            dst_v_idx = rr_idx * 3 + 2
-            
-            # Copy coordinates and visibility
-            if src_x_idx + landmarks_per_point <= len(input_data):
-                # MediaPipe returns normalized coordinates [0..1], convert to pixel coordinates
-                if frame_width is not None and frame_height is not None:
-                    rr21_landmarks[dst_x_idx] = input_data[src_x_idx] * frame_width
-                    rr21_landmarks[dst_y_idx] = input_data[src_y_idx] * frame_height
-                else:
-                    rr21_landmarks[dst_x_idx] = input_data[src_x_idx]
-                    rr21_landmarks[dst_y_idx] = input_data[src_y_idx]
-                
-                rr21_landmarks[dst_v_idx] = input_data[src_v_idx]
+            landmarks.append(x)
+            landmarks.append(y)
         
-        return rr21_landmarks.tolist()
-        
-    # Otherwise, the input is a DataFrame (from video processing)
-    else:
-        # Define mapping from MediaPipe to RR21 format
-        mapping = {
-            'NOSE': 'NOSE',
-            'LEFT_EYE': 'LEFT_EYE',
-            'RIGHT_EYE': 'RIGHT_EYE',
-            'LEFT_EAR': 'LEFT_EAR',
-            'RIGHT_EAR': 'RIGHT_EAR',
-            'LEFT_SHOULDER': 'LEFT_SHOULDER',
-            'RIGHT_SHOULDER': 'RIGHT_SHOULDER',
-            'LEFT_ELBOW': 'LEFT_ELBOW',
-            'RIGHT_ELBOW': 'RIGHT_ELBOW',
-            'LEFT_WRIST': 'LEFT_WRIST',
-            'RIGHT_WRIST': 'RIGHT_WRIST',
-            'LEFT_HIP': 'LEFT_HIP',
-            'RIGHT_HIP': 'RIGHT_HIP',
-            'LEFT_KNEE': 'LEFT_KNEE',
-            'RIGHT_KNEE': 'RIGHT_KNEE',
-            'LEFT_ANKLE': 'LEFT_ANKLE',
-            'RIGHT_ANKLE': 'RIGHT_ANKLE',
-            'LEFT_HEEL': 'LEFT_HEEL',
-            'RIGHT_HEEL': 'RIGHT_HEEL',
-            'LEFT_FOOT_INDEX': 'LEFT_FOOT',
-            'RIGHT_FOOT_INDEX': 'RIGHT_FOOT'
-        }
-        
-        # Create RR21 DataFrame
-        num_frames = len(input_data)
-        rr21_data = create_empty_pose_dataframe(num_frames, "rr21")
-        
-        # Copy data from MediaPipe format to RR21
-        for mp_kp, rr_kp in mapping.items():
-            x_col_mp = f"{mp_kp}_X"
-            y_col_mp = f"{mp_kp}_Y"
-            v_col_mp = f"{mp_kp}_V"
-            
-            x_col_rr = f"{rr_kp}_X"
-            y_col_rr = f"{rr_kp}_Y"
-            v_col_rr = f"{rr_kp}_V"
-            
-            if x_col_mp in input_data.columns and x_col_rr in rr21_data.columns:
-                # Convert coordinates if frame dimensions are provided
-                if frame_width is not None and frame_height is not None:
-                    # MediaPipe returns normalized coordinates [0..1], convert to pixel coordinates
-                    rr21_data[x_col_rr] = input_data[x_col_mp] * frame_width
-                    rr21_data[y_col_rr] = input_data[y_col_mp] * frame_height
-                else:
-                    rr21_data[x_col_rr] = input_data[x_col_mp]
-                    rr21_data[y_col_rr] = input_data[y_col_mp]
-                    
-                if v_col_mp in input_data.columns and v_col_rr in rr21_data.columns:
-                    rr21_data[v_col_rr] = input_data[v_col_mp]
-        
-        return rr21_data
-
-def convert_list_to_dataframe(landmarks_list, format_name="mediapipe33"):
-    """
-    Convert a list of landmarks to a DataFrame
-
-    Args:
-        landmarks_list: List of landmarks [x1, y1, x2, y2, ...]
-        format_name: Format name for column creation
-
-    Returns:
-        pandas.DataFrame: DataFrame with landmark coordinates
-    """
-    # Ensure we have landmarks data
-    if landmarks_list and len(landmarks_list) > 0:
-        # Create column names based on the format
-        columns = []
-        if format_name == "mediapipe33":
-            # MediaPipe has 33 landmarks with x, y, and visibility
-            for name in SUPPORTED_FORMATS.get(format_name, []):
-                columns.extend([f'{name}_X', f'{name}_Y', f'{name}_V'])
-        elif format_name == "rr21":
-            # RR21 has 21 landmarks with x, y
-            for name in SUPPORTED_FORMATS.get(format_name, []):
-                columns.extend([f'{name}_X', f'{name}_Y'])
+        # Assign to correct hand
+        if handedness == "Left":
+            left_hand = landmarks
         else:
-            # Generic format
-            num_landmarks = len(landmarks_list) // 2
-            columns = []
-            for i in range(num_landmarks):
-                columns.extend([f'point{i}_X', f'point{i}_Y'])
+            right_hand = landmarks
+            
+    return left_hand, right_hand
 
-        # Prepare data based on what we received
-        data = []
-
-        # Check whether we have visibility data
-        # For MediaPipe, we expect triplets (x, y, visibility)
-        step = 3 if format_name == "mediapipe33" and len(landmarks_list) % 3 == 0 else 2
-
-        for i in range(0, len(landmarks_list), step):
-            if i+step-1 < len(landmarks_list):
-                # Add coordinates
-                for j in range(step):
-                    if i+j < len(landmarks_list):
-                        data.append(landmarks_list[i+j])
-
-        # Create DataFrame with the data
-        df = pd.DataFrame([data], columns=columns[:len(data)])
-        return df
-    else:
-        # Create empty DataFrame with correct columns
-        columns = []
-        if format_name == "mediapipe33":
-            for name in SUPPORTED_FORMATS.get(format_name, []):
-                columns.extend([f'{name}_X', f'{name}_Y', f'{name}_V'])
-        elif format_name == "rr21":
-            for name in SUPPORTED_FORMATS.get(format_name, []):
-                columns.extend([f'{name}_X', f'{name}_Y'])
-
-        df = pd.DataFrame(columns=columns)
-        return df
-
-def process_detection_result(result):
+def update_hand_dataframe(df, frame_idx, landmarks, is_left):
     """
-    Process the detection result to ensure it's a proper DataFrame
-
+    Update hand DataFrame with landmarks
+    
     Args:
-        result: Detection result (DataFrame or list)
-
-    Returns:
-        pandas.DataFrame: Properly formatted pose data
+        df: DataFrame to update
+        frame_idx: Frame index
+        landmarks: List of landmarks [x1, y1, x2, y2, ...]
+        is_left: Whether it's the left hand
     """
-    # Check if result is already a DataFrame
-    if isinstance(result, pd.DataFrame):
-        return result
+    prefix = 'HandL_' if is_left else 'HandR_'
+    
+    for i in range(21):  # 21 hand landmarks
+        if i*2+1 < len(landmarks):
+            df.loc[frame_idx, f'{prefix}{i}_X'] = landmarks[i*2]
+            df.loc[frame_idx, f'{prefix}{i}_Y'] = landmarks[i*2+1]
 
-    # If result is a list, convert to DataFrame
-    if isinstance(result, list):
-        # Assuming the list comes from mediapipe single frame detection
-        return convert_list_to_dataframe(result, format_name="mediapipe33")
+def create_hand_dataframe(num_frames):
+    """
+    Create empty DataFrames for hand landmarks
+    
+    Args:
+        num_frames: Number of frames
+        
+    Returns:
+        tuple: (left_hand_dataframe, right_hand_dataframe)
+    """
+    left_hand_data = pd.DataFrame(index=range(num_frames), columns=[f'HandL_{i}_{coord}' for i in range(21) for coord in ['X', 'Y']])
+    right_hand_data = pd.DataFrame(index=range(num_frames), columns=[f'HandR_{i}_{coord}' for i in range(21) for coord in ['X', 'Y']])
+    
+    return left_hand_data, right_hand_data
 
-    # If neither, create an empty DataFrame based on mediapipe33 format
-    columns = []
-    if "mediapipe33" in SUPPORTED_FORMATS:
-        for kp in SUPPORTED_FORMATS["mediapipe33"]:
-            columns.append(f"{kp}_X")
-            columns.append(f"{kp}_Y")
-            columns.append(f"{kp}_V")
-
-    return pd.DataFrame(columns=columns)
+__all__ = [
+    "get_pose_landmarks_from_frame",
+    "get_hand_landmarks_from_frame",
+    "get_face_landmarks_from_frame",
+    "process_video_with_mediapipe",
+    "process_video_with_mediapipe_hands",
+    "process_video_with_mediapipe_face",
+    "extract_hand_landmarks",
+    "update_hand_dataframe",
+    "create_hand_dataframe",
+    "process_frame_with_mediapipe_all"
+]

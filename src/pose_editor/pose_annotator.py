@@ -13,10 +13,10 @@ from PyQt5.QtGui import QImage, QPixmap, QCursor, QIcon, QKeySequence
 from .plot import create_plot_widget
 from .mediapipe_io import (get_pose_landmarks_from_frame, process_video_with_mediapipe,
                            process_mediapipe_to_rr21)
-from .body_format import load_pose_data, save_pose_data, SUPPORTED_FORMATS
-from .hand_format import (process_video_with_mediapipe_hands, get_hand_landmarks_from_frame, 
+from .body_keypoints import load_pose_data, save_pose_data, SUPPORTED_FORMATS
+from .hand_keypoints import (process_video_with_mediapipe_hands, get_hand_landmarks_from_frame, 
                               HAND_LANDMARK_NAMES, draw_hand_landmarks, save_hand_data, load_hand_data)
-from .face_format import (process_video_with_mediapipe_face, get_face_landmarks_from_frame,
+from .face_keypoints import (process_video_with_mediapipe_face, get_face_landmarks_from_frame,
                               FACE_LANDMARK_COUNT, draw_face_landmarks, save_face_data, load_face_data)
 
 
@@ -384,8 +384,9 @@ class PoseEditor(QMainWindow):
         body_label = QLabel("Body Model:")
         self.body_model_combo = QComboBox()
         self.body_model_combo.addItems([
-            "MediaPipe Pose Small", 
-            "MediaPipe Pose Large", 
+            "MediaPipe Pose Lite",
+            "MediaPipe Pose Full",
+            "MediaPipe Pose Heavy",
             "Skip"
         ])
         body_layout.addWidget(body_label)
@@ -772,7 +773,7 @@ class PoseEditor(QMainWindow):
                 
                 # Transform coordinates based on rotation
                 transformed_pos = self.transform_coordinates(scaled_pos)
-                
+
                 # Check which keypoint is hovered
                 hovered_idx = self.get_hovered_keypoint(transformed_pos)
                 
@@ -813,9 +814,11 @@ class PoseEditor(QMainWindow):
                         # Store the initial position for the drag operation
                         category = self._current_keypoint_type
                         if category == "Body" and self.pose_data is not None:
+                            kp = self.keypoint_names[self.selected_point]
+                            xcol, ycol = f"{kp}_X", f"{kp}_Y"
                             self._drag_start_pos = (
-                                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2],
-                                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1]
+                                self.pose_data.at[self.current_frame_idx, xcol],
+                                self.pose_data.at[self.current_frame_idx, ycol]
                             )
                         elif category == "Left Hand" and self.hand_data_left is not None:
                             self._drag_start_pos = (
@@ -883,8 +886,10 @@ class PoseEditor(QMainWindow):
                             current_y = None
                             
                             if category == "Body" and self.pose_data is not None:
-                                current_x = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2]
-                                current_y = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1]
+                                kp = self.keypoint_names[self.selected_point]
+                                xcol, ycol = f"{kp}_X", f"{kp}_Y"
+                                current_x = self.pose_data.at[self.current_frame_idx, xcol]
+                                current_y = self.pose_data.at[self.current_frame_idx, ycol]
                             elif category == "Left Hand" and self.hand_data_left is not None:
                                 current_x = self.hand_data_left.iloc[self.current_frame_idx, self.selected_point]
                                 current_y = self.hand_data_left.iloc[self.current_frame_idx, self.selected_point + 21]
@@ -1197,24 +1202,14 @@ class PoseEditor(QMainWindow):
         category = self._current_keypoint_type
         
         if category == "Body" and self.pose_data is not None:
-            # Skip update if position hasn't changed significantly
-            current_x = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2]
-            current_y = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1]
-            
-            # Only update if position changed by at least 1 pixel
-            if abs(x - current_x) < 1 and abs(y - current_y) < 1:
-                return
-            
-            # Store initial position for undo when first starting to drag
-            if not hasattr(self, '_drag_start_pos'):
-                self._drag_start_pos = (current_x, current_y)
-            
-            # Update data
-            self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2] = x
-            self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1] = y
-            
-            # Update current pose if using body keypoints
-            if self.current_pose is not None:
+            kp = self.keypoint_names[self.selected_point]
+            xcol, ycol = f"{kp}_X", f"{kp}_Y"
+            old_x = self.pose_data.at[self.current_frame_idx, xcol]
+            old_y = self.pose_data.at[self.current_frame_idx, ycol]
+            if old_x != x or old_y != y:
+                self.create_move_command(self.selected_point, old_x, old_y, x, y)
+                self.pose_data.at[self.current_frame_idx, xcol] = x
+                self.pose_data.at[self.current_frame_idx, ycol] = y
                 self.current_pose[self.selected_point] = [x, y]
                 
         elif category == "Left Hand" and self.hand_data_left is not None:
@@ -1287,24 +1282,15 @@ class PoseEditor(QMainWindow):
         old_y = None
         
         if category == "Body" and self.pose_data is not None:
-            old_x = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2]
-            old_y = self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1]
-            
+            kp = self.keypoint_names[self.selected_point]
+            xcol, ycol = f"{kp}_X", f"{kp}_Y"
+            old_x = self.pose_data.at[self.current_frame_idx, xcol]
+            old_y = self.pose_data.at[self.current_frame_idx, ycol]
             if old_x != new_x or old_y != new_y:
-                # Create command for undo/redo
-                self.create_move_command(
-                    self.selected_point,
-                    old_x, old_y,
-                    new_x, new_y
-                )
-                
-                # Update the pose data
-                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2] = new_x
-                self.pose_data.iloc[self.current_frame_idx, self.selected_point * 2 + 1] = new_y
-                
-                # Update current_pose
-                if self.current_pose is not None and self.selected_point < len(self.current_pose):
-                    self.current_pose[self.selected_point] = [new_x, new_y]
+                self.create_move_command(self.selected_point, old_x, old_y, new_x, new_y)
+                self.pose_data.at[self.current_frame_idx, xcol] = new_x
+                self.pose_data.at[self.current_frame_idx, ycol] = new_y
+                self.current_pose[self.selected_point] = [new_x, new_y]
         
         elif category == "Left Hand" and self.hand_data_left is not None:
             old_x = self.hand_data_left.iloc[self.current_frame_idx, self.selected_point]
@@ -1785,10 +1771,10 @@ class PoseEditor(QMainWindow):
             # Body detection
             if models["body"]:
                 # Set model complexity based on selection
-                model_complexity = 0  # Default to small
-                if "Medium" in models["body"]:
+                model_complexity = 0  # Lite
+                if "Full" in models["body"]:
                     model_complexity = 1
-                elif "Large" in models["body"]:
+                elif "Heavy" in models["body"]:
                     model_complexity = 2
                 
                 # Detect body landmarks
@@ -1930,10 +1916,10 @@ class PoseEditor(QMainWindow):
             if models["body"]:
                 progress.setLabelText("Processing video with MediaPipe Pose...")
                 # Set model complexity based on selection
-                model_complexity = 0  # Default to small (was incorrectly set to 2)
-                if "Medium" in models["body"]:
+                model_complexity = 0  # Lite
+                if "Full" in models["body"]:
                     model_complexity = 1
-                elif "Large" in models["body"]:
+                elif "Heavy" in models["body"]:
                     model_complexity = 2
                 
                 # Process video with selected complexity
@@ -2263,10 +2249,18 @@ class PoseEditor(QMainWindow):
         
         # Draw body keypoints in background if not current category
         if category != "Body" and self.pose_data is not None:
-            pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
-            for point in pose:
-                # Draw with low opacity
-                cv2.circle(frame, (int(point[0]), int(point[1])), 3, (0, 150, 0), -1)
+            total_columns = self.pose_data.shape[1]
+            if total_columns % 3 == 0:
+                # we have (x,y,vis) format – take every 3rd for x and y
+                x_coords = self.pose_data.iloc[self.current_frame_idx, 0:total_columns:3].values
+                y_coords = self.pose_data.iloc[self.current_frame_idx, 1:total_columns:3].values
+            else:
+                # simple (x,y) format
+                coords = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+                x_coords, y_coords = coords[:, 0], coords[:, 1]
+            for x, y in zip(x_coords, y_coords):
+                if x > 0 or y > 0:
+                    cv2.circle(frame, (int(x), int(y)), 3, (0, 150, 0), -1)
         
         # Draw left hand in background if not current category
         if category != "Left Hand" and self.hand_data_left is not None:
