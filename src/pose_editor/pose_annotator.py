@@ -1875,7 +1875,7 @@ class PoseEditor(QMainWindow):
             # Add command for undo/redo
             if new_data:
                 cmd = MediaPipeDetectionCommand(self, self.current_frame_idx, old_data, new_data)
-                self.undo_stack.push(cmd)
+                self.add_command(cmd)
             
             # Display annotated frame
             self.display_frame(annotated_frame)
@@ -2244,6 +2244,12 @@ class PoseEditor(QMainWindow):
 
     def _draw_background_keypoints(self, frame):
         """Draw other keypoint categories in the background with reduced visibility"""
+        # -- guard against missing data or bad index --
+        if not hasattr(self, 'pose_data') or self.pose_data is None:
+            return
+        if self.current_frame_idx < 0 or self.current_frame_idx >= len(self.pose_data):
+            return
+
         # Current category is handled separately with full visibility
         category = self._current_keypoint_type
         
