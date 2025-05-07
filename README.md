@@ -20,12 +20,13 @@ Pose Editor is a user-friendly application for editing and refining human pose k
 
 ## Requirements
 ```bash
-python>=3.9
-PyQt5>=5.15.0
-opencv-python>=4.5.0
+python=3.12
+PyQt5>=5.15.9
+opencv-python>=4.11.0
 pandas>=1.3.0
-numpy>=1.19.0
-matplotlib>=3.4.0
+numpy>=1.26.4
+matplotlib>=3.10.1
+mediapipe>=0.10.21
 ```
 
 ## Installation
@@ -49,7 +50,7 @@ matplotlib>=3.4.0
 1. Open your Anaconda Prompt.
 2. Create or activate a conda environment:
    ```bash
-   conda create -n pose-editor python=3.9
+   conda create -n pose-editor python=3.12
    conda activate pose-editor
    ```
 3. Clone or download the repository and navigate into it:

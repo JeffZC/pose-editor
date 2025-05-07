@@ -15,3 +15,12 @@ build/
 test_data/
 .vscode/
 .conda/
+*.ipynb_checkpoints/
+*.log
+*.csv
+*.json
+*.pkl
+*.h5
+*.pth
+*.pt
+*.ckpt
