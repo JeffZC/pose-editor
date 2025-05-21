@@ -67,6 +67,13 @@ mediapipe>=0.10.21
    python pose_annotator.py
    ```
 
+## OpenPose Format
+
+If you have OpenPose output in its native JSON format, use the included helper tool to convert it into our RR21-compatible CSV format for optimal results.
+   ```bash
+   python json_to_rr21_csv_gui.py
+   ```
+   
 ## Controls
 
 - Left click to select points.
