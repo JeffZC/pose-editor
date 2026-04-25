@@ -1,6 +1,6 @@
 # Pose Editor: An Intuitive Tool for Human Pose Keypoint Refinement
 
-Pose Editor is a user-friendly application for editing and refining human pose keypoint data, which bridges the gap between automated pose detection and human refinement, allowing users to manually adjust AI-generated keypoints that may be imprecise or incorrect. This versatile tool allows researchers, animators, and motion analysts to precisely correct and improve keypoints recognized by human pose estimation algorithms such as MediaPipe, OpenPose, etc.
+Pose Editor is a user-friendly application for editing and refining human pose keypoint data, which bridges the gap between automated pose detection and human refinement, allowing users to manually adjust AI-tracked keypoints that may be imprecise or incorrect. This versatile tool allows researchers, animators, and motion analysts to precisely correct and improve keypoints recognized by human pose estimation algorithms such as MediaPipe, OpenPose, etc.
 
 ## Key Features
 
