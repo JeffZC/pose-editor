@@ -81,3 +81,11 @@ If you have OpenPose output in its native JSON format, use the included helper t
 - Right click to deselect points.
 - Use +/- buttons to zoom in/out.
 - Use arrow buttons or slider for frame navigation.
+
+## Pose Detection Modes
+
+When using the built-in MediaPipe pose detection, the mode dropdown gives you three options:
+
+- **Current Frame**: Runs pose detection only on the frame you are currently viewing. Choose this when you only need to fix the current frame or want to test detection before processing more of the video.
+- **All Frames**: Processes the full video frame by frame, with each frame detected independently. Choose this when the movement pattern is atypical and **Entire Video** creates lagging or leading behavior in the tracked pose.
+- **Entire Video**: Processes the full video using MediaPipe video mode, which uses temporal context across frames. This is the recommended default for most videos and should usually be the first mode you try.
