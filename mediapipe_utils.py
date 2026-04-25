@@ -76,6 +76,27 @@ def _get_image_landmarker(model_variant: str = "heavy", confidence_threshold: fl
     return _image_landmarkers[cache_key]
 
 
+_video_landmarkers = {}
+
+
+def _get_video_landmarker(model_variant: str = "heavy", confidence_threshold: float = 0.9):
+    variant = normalize_pose_model_variant(model_variant)
+    threshold = normalize_confidence_threshold(confidence_threshold)
+    cache_key = (variant, threshold)
+    if cache_key not in _video_landmarkers:
+        model_path = download_pose_model(variant)
+        base_options = mp.tasks.BaseOptions(model_asset_path=model_path)
+        options = mp.tasks.vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=mp.tasks.vision.RunningMode.VIDEO,
+            min_pose_detection_confidence=threshold,
+            min_pose_presence_confidence=threshold,
+            min_tracking_confidence=threshold,
+        )
+        _video_landmarkers[cache_key] = mp.tasks.vision.PoseLandmarker.create_from_options(options)
+    return _video_landmarkers[cache_key]
+
+
 def _extract_landmarks_from_results(results, frame_shape):
     if not results or not results.pose_landmarks:
         return []
@@ -202,6 +223,78 @@ def process_video_with_mediapipe(video_path, progress_dialog=None, model_variant
 
     except Exception as e:
         print(f"Error processing video: {e}")
+        if "cap" in locals() and cap is not None:
+            cap.release()
+        return None, False
+
+
+def process_video_with_mediapipe_video_mode(video_path, progress_dialog=None, model_variant: str = "heavy", confidence_threshold: float = 0.9):
+    """
+    Process an entire video with MediaPipe pose detection using video mode.
+
+    Args:
+        video_path: Path to the video file
+        progress_dialog: Optional progress object with setValue()/wasCanceled()
+
+    Returns:
+        tuple: (DataFrame with pose data in RR21 format, success flag)
+    """
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None, False
+
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if frame_count <= 0:
+            cap.release()
+            return None, False
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            fps = 30.0
+
+        column_names = []
+        for name in SUPPORTED_FORMATS["rr21"]:
+            column_names.extend([f"{name}_X", f"{name}_Y"])
+
+        pose_data = pd.DataFrame(np.zeros((frame_count, len(column_names))), columns=column_names)
+        landmarker = _get_video_landmarker(model_variant, confidence_threshold)
+
+        frame_idx = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if progress_dialog is not None:
+                progress_percent = min(100, int((frame_idx / frame_count) * 100))
+                try:
+                    progress_dialog.setValue(progress_percent)
+                    if hasattr(progress_dialog, "wasCanceled") and progress_dialog.wasCanceled():
+                        break
+                except Exception:
+                    pass
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            timestamp_ms = int((frame_idx / fps) * 1000)
+            results = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+            landmarks_list = _extract_landmarks_from_results(results, frame.shape)
+            if landmarks_list:
+                rr21_landmarks = process_mediapipe_to_rr21(landmarks_list)
+                for i in range(0, len(rr21_landmarks), 2):
+                    if i + 1 < len(rr21_landmarks) and i // 2 < len(column_names) // 2:
+                        pose_data.iloc[frame_idx, i] = rr21_landmarks[i]
+                        pose_data.iloc[frame_idx, i + 1] = rr21_landmarks[i + 1]
+
+            frame_idx += 1
+
+        cap.release()
+        return pose_data, True
+
+    except Exception as e:
+        print(f"Error processing video in MediaPipe video mode: {e}")
         if "cap" in locals() and cap is not None:
             cap.release()
         return None, False

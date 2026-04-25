@@ -9,7 +9,11 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton,
 from PyQt5.QtCore import Qt, QPoint, QSize, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QCursor, QIcon, QKeySequence
 from plot_utils import create_plot_widget, calculate_ankle_angle
-from mediapipe_utils import get_pose_landmarks_from_frame, process_video_with_mediapipe
+from mediapipe_utils import (
+    get_pose_landmarks_from_frame,
+    process_video_with_mediapipe,
+    process_video_with_mediapipe_video_mode,
+)
 from PyQt5.QtWidgets import QProgressDialog, QMessageBox
 from pose_format_utils import load_pose_data, save_pose_data, SUPPORTED_FORMATS, process_mediapipe_to_rr21, get_keypoint_connections
 
@@ -182,6 +186,7 @@ class PoseEditor(QMainWindow):
         # Pose detection settings (standalone, no GaitDiff dependency)
         self.pose_model_variant = "heavy"
         self.pose_confidence_threshold = 0.9
+        self.pose_detection_mode = "current_frame"
 
         # Initialize caching system properties
         self._cached_frame = None
@@ -370,25 +375,31 @@ class PoseEditor(QMainWindow):
         # Create right panel for zoom controls
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
+        right_layout.setSpacing(8)
+        right_layout.setContentsMargins(0, 0, 0, 0)
     
         # Create video controls group box
         self.video_control_group_box = QGroupBox("Video Controls")
         self.video_control_layout = QVBoxLayout()
+        self.video_control_layout.addStretch(1)
 
         # Add Load Video button
         self.load_video_button = QPushButton("Load Video")
         self.load_video_button.clicked.connect(self.load_video)
         self.video_control_layout.addWidget(self.load_video_button)
+        self.video_control_layout.addStretch(1)
 
         # Add the rotate button
         self.rotate_button = QPushButton("Rotate View (90°)")
         self.rotate_button.clicked.connect(self.rotate_video)
         self.video_control_layout.addWidget(self.rotate_button)
+        self.video_control_layout.addStretch(1)
 
         # Add black and white toggle button
         self.bw_button = QPushButton("Toggle Black and White")
         self.bw_button.clicked.connect(self.toggle_black_and_white)
         self.video_control_layout.addWidget(self.bw_button)
+        self.video_control_layout.addStretch(1)
 
         # Create zoom controls in a horizontal layout
         self.zoom_controls = QHBoxLayout()
@@ -401,12 +412,14 @@ class PoseEditor(QMainWindow):
 
         # Add the zoom controls horizontal layout to the vertical layout
         self.video_control_layout.addLayout(self.zoom_controls)
+        self.video_control_layout.addStretch(1)
         self.video_control_group_box.setLayout(self.video_control_layout)
-        right_layout.addWidget(self.video_control_group_box)
+        right_layout.addWidget(self.video_control_group_box, 1)
     
         # Create keypoint selection group box
         self.keypoint_ops_group_box = QGroupBox("Keypoint Operations")
         self.keypoint_ops_layout = QVBoxLayout()
+        self.keypoint_ops_layout.addStretch(1)
 
         # Add keypoint selection with label
         self.keypoint_selection_layout = QHBoxLayout()
@@ -417,6 +430,7 @@ class PoseEditor(QMainWindow):
         self.keypoint_selection_layout.addWidget(self.keypoint_selection_label)
         self.keypoint_selection_layout.addWidget(self.keypoint_dropdown)
         self.keypoint_ops_layout.addLayout(self.keypoint_selection_layout)
+        self.keypoint_ops_layout.addStretch(1)
 
         # Add coordinate inputs with labels
         self.x_coord_layout = QHBoxLayout()
@@ -425,6 +439,7 @@ class PoseEditor(QMainWindow):
         self.x_coord_layout.addWidget(self.x_coord_label)
         self.x_coord_layout.addWidget(self.x_coord_input)
         self.keypoint_ops_layout.addLayout(self.x_coord_layout)
+        self.keypoint_ops_layout.addStretch(1)
 
         self.y_coord_layout = QHBoxLayout()
         self.y_coord_label = QLabel("Y Coordinate:")
@@ -432,11 +447,13 @@ class PoseEditor(QMainWindow):
         self.y_coord_layout.addWidget(self.y_coord_label)
         self.y_coord_layout.addWidget(self.y_coord_input)
         self.keypoint_ops_layout.addLayout(self.y_coord_layout)
+        self.keypoint_ops_layout.addStretch(1)
 
         # Add confirm button
         self.confirm_button = QPushButton("Update Coordinates")
         self.confirm_button.clicked.connect(self.update_keypoint_coordinates)
         self.keypoint_ops_layout.addWidget(self.confirm_button)
+        self.keypoint_ops_layout.addStretch(1)
 
         # Add to your initUI method after creating the coordinate inputs
         self.x_coord_input.returnPressed.connect(self.update_keypoint_coordinates)
@@ -448,11 +465,12 @@ class PoseEditor(QMainWindow):
 
         # Set the layout and add to right panel
         self.keypoint_ops_group_box.setLayout(self.keypoint_ops_layout)
-        right_layout.addWidget(self.keypoint_ops_group_box)
+        right_layout.addWidget(self.keypoint_ops_group_box, 1)
     
         # Create undo/redo group box (new)
         self.history_group_box = QGroupBox("Edit History")
         self.history_layout = QHBoxLayout()  # Horizontal layout for buttons side by side
+        self.history_layout.addStretch(1)
         self.undo_button = QPushButton("Undo")
         self.undo_button.setShortcut(QKeySequence("Ctrl+Z"))
         self.undo_button.clicked.connect(self.undo_last_command)
@@ -462,34 +480,43 @@ class PoseEditor(QMainWindow):
         self.redo_button.clicked.connect(self.redo_last_command)
         self.redo_button.setEnabled(False)  # Disabled by default
         self.history_layout.addWidget(self.undo_button)
+        self.history_layout.addStretch(1)
         self.history_layout.addWidget(self.redo_button)
+        self.history_layout.addStretch(1)
         self.history_group_box.setLayout(self.history_layout)
-        right_layout.addWidget(self.history_group_box)
+        right_layout.addWidget(self.history_group_box, 1)
         
         # Create Pose Options group box (renamed from MediaPipe)
         self.pose_options_group_box = QGroupBox("Pose Options")
         self.pose_options_layout = QVBoxLayout()
+        self.pose_options_layout.addStretch(1)
 
         # Add Load Pose button at the top
         self.load_pose_button = QPushButton("Load Pose (from csv)")
         self.load_pose_button.clicked.connect(self.load_pose)
         self.pose_options_layout.addWidget(self.load_pose_button)
+        self.pose_options_layout.addStretch(1)
 
-        # Add pose detection buttons
-        self.detect_current_frame_button = QPushButton("Run Pose Current Frame")
-        self.detect_current_frame_button.clicked.connect(self.detect_pose_current_frame)
-        self.detect_video_button = QPushButton("Run Pose Entire Video")
-        self.detect_video_button.clicked.connect(self.detect_pose_video)
+        # Add pose detection mode selector and a single action button
+        self.pose_mode_label = QLabel("Mode:")
+        self.pose_mode_dropdown = QComboBox()
+        self.pose_mode_dropdown.addItem("Current Frame", "current_frame")
+        self.pose_mode_dropdown.addItem("All Frames", "all_frames")
+        self.pose_mode_dropdown.addItem("Entire Video", "entire_video")
+        self.pose_mode_dropdown.currentIndexChanged.connect(self._on_pose_detection_mode_changed)
+        self.detect_pose_button = QPushButton("Run Pose")
+        self.detect_pose_button.clicked.connect(self.run_pose_detection)
 
         # Add detection settings controls
         self.pose_settings_layout = QHBoxLayout()
-        self.pose_settings_layout.addWidget(QLabel("Model:"))
+        self.pose_settings_layout.setContentsMargins(0, 0, 0, 0)
+        self.pose_settings_layout.setSpacing(16)
+
         self.pose_model_dropdown = QComboBox()
         self.pose_model_dropdown.addItems(["lite", "full", "heavy"])
         self.pose_model_dropdown.setCurrentText(self.pose_model_variant)
         self.pose_model_dropdown.currentTextChanged.connect(self._on_pose_model_changed)
-        self.pose_settings_layout.addWidget(self.pose_model_dropdown)
-        self.pose_settings_layout.addWidget(QLabel("Confidence:"))
+
         self.confidence_spin = QDoubleSpinBox()
         self.confidence_spin.setRange(0.0, 1.0)
         self.confidence_spin.setSingleStep(0.05)
@@ -497,20 +524,61 @@ class PoseEditor(QMainWindow):
         self.confidence_spin.setValue(self.pose_confidence_threshold)
         self.confidence_spin.setToolTip("MediaPipe detection confidence threshold")
         self.confidence_spin.valueChanged.connect(self._on_confidence_change)
-        self.pose_settings_layout.addWidget(self.confidence_spin)
+
+        self.model_control_layout = QHBoxLayout()
+        self.model_control_layout.setContentsMargins(0, 0, 0, 0)
+        self.model_control_layout.setSpacing(2)
+        self.model_control_layout.addWidget(QLabel("Model:"))
+        self.model_control_layout.addWidget(self.pose_model_dropdown)
+        self.model_control_layout.addStretch(1)
+
+        self.model_control_widget = QWidget()
+        self.model_control_widget.setLayout(self.model_control_layout)
+
+        self.confidence_control_layout = QHBoxLayout()
+        self.confidence_control_layout.setContentsMargins(0, 0, 0, 0)
+        self.confidence_control_layout.setSpacing(2)
+        self.confidence_control_layout.addWidget(QLabel("Confidence:"))
+        self.confidence_control_layout.addWidget(self.confidence_spin)
+        self.confidence_control_layout.addStretch(1)
+
+        self.confidence_control_widget = QWidget()
+        self.confidence_control_widget.setLayout(self.confidence_control_layout)
+
+        self.mode_control_layout = QHBoxLayout()
+        self.mode_control_layout.setContentsMargins(0, 0, 0, 0)
+        self.mode_control_layout.setSpacing(2)
+        self.mode_control_layout.addWidget(self.pose_mode_label)
+        self.mode_control_layout.addWidget(self.pose_mode_dropdown)
+        self.mode_control_layout.addStretch(1)
+
+        self.mode_control_widget = QWidget()
+        self.mode_control_widget.setLayout(self.mode_control_layout)
+
+        self.pose_settings_layout.addWidget(self.model_control_widget, 1)
+        self.pose_settings_layout.addWidget(self.confidence_control_widget, 1)
+        self.pose_settings_layout.addWidget(self.mode_control_widget, 1)
+
+        # Group Run Pose with the options row so they stay visually attached.
+        self.pose_run_group_widget = QWidget()
+        self.pose_run_group_layout = QVBoxLayout(self.pose_run_group_widget)
+        self.pose_run_group_layout.setContentsMargins(0, 0, 0, 0)
+        self.pose_run_group_layout.setSpacing(4)
+        self.pose_run_group_layout.addWidget(self.detect_pose_button, 0)
+        self.pose_run_group_layout.addLayout(self.pose_settings_layout, 0)
 
         # Add widgets to layout
-        self.pose_options_layout.addWidget(self.detect_current_frame_button)
-        self.pose_options_layout.addWidget(self.detect_video_button)
-        self.pose_options_layout.addLayout(self.pose_settings_layout)
+        self.pose_options_layout.addWidget(self.pose_run_group_widget)
+        self.pose_options_layout.addStretch(1)
 
         # Add Save Pose button at the bottom
         self.save_button = QPushButton("Save Poses (to csv)")
         self.save_button.clicked.connect(self.save_pose)
         self.pose_options_layout.addWidget(self.save_button)
+        self.pose_options_layout.addStretch(1)
 
         self.pose_options_group_box.setLayout(self.pose_options_layout)
-        right_layout.addWidget(self.pose_options_group_box)
+        right_layout.addWidget(self.pose_options_group_box, 1)
                 
         # Add panels to main layout
         main_layout.addWidget(left_panel, stretch=4)
@@ -529,6 +597,7 @@ class PoseEditor(QMainWindow):
         # Make the navigation buttons more obvious with tooltips
         self.prev_frame_button.setToolTip("Previous frame (Left arrow key)")
         self.next_frame_button.setToolTip("Next frame (Right arrow key)")
+        self._update_pose_detection_mode_ui()
 
     def toggle_black_and_white(self):
         self.black_and_white = not self.black_and_white
@@ -1283,6 +1352,37 @@ class PoseEditor(QMainWindow):
         except (TypeError, ValueError):
             self.pose_confidence_threshold = 0.9
 
+    def _update_pose_detection_mode_ui(self):
+        """Refresh the mode selector and run button tooltip."""
+        index = self.pose_mode_dropdown.findData(self.pose_detection_mode)
+        if index >= 0 and self.pose_mode_dropdown.currentIndex() != index:
+            self.pose_mode_dropdown.blockSignals(True)
+            self.pose_mode_dropdown.setCurrentIndex(index)
+            self.pose_mode_dropdown.blockSignals(False)
+
+        if self.pose_detection_mode == "current_frame":
+            self.detect_pose_button.setToolTip("Process only the currently displayed frame")
+        elif self.pose_detection_mode == "all_frames":
+            self.detect_pose_button.setToolTip("Process the loaded video frame by frame")
+        else:
+            self.detect_pose_button.setToolTip("Process the loaded video with MediaPipe video mode")
+
+    def _on_pose_detection_mode_changed(self, index):
+        """Update the active pose detection mode."""
+        mode = self.pose_mode_dropdown.itemData(index)
+        if mode:
+            self.pose_detection_mode = mode
+            self._update_pose_detection_mode_ui()
+
+    def run_pose_detection(self):
+        """Run pose detection using the currently selected mode."""
+        if self.pose_detection_mode == "current_frame":
+            self.detect_pose_current_frame()
+        elif self.pose_detection_mode == "all_frames":
+            self.detect_pose_video()
+        else:
+            self.detect_pose_video_mode()
+
     def detect_pose_current_frame(self):
         """Detect pose on the current frame using MediaPipe"""
         if self.current_frame is None:
@@ -1433,6 +1533,64 @@ class PoseEditor(QMainWindow):
             if 'progress' in locals() and progress is not None:
                 progress.close()
             QMessageBox.critical(self, "Error", f"An error occurred during video processing: {str(e)}")
+
+    def detect_pose_video_mode(self):
+        """Detect pose on the entire video using MediaPipe video mode."""
+        if not hasattr(self, 'video_path') or not self.video_path:
+            QMessageBox.warning(self, "No Video", "Please load a video first.")
+            return
+
+        try:
+            progress = QProgressDialog("Processing video with MediaPipe video mode...", "Cancel", 0, 100, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setWindowTitle("Processing Video")
+            progress.show()
+
+            new_pose_data, success = process_video_with_mediapipe_video_mode(
+                self.video_path,
+                progress,
+                model_variant=self.pose_model_variant,
+                confidence_threshold=self.pose_confidence_threshold,
+            )
+
+            progress.setValue(100)
+            progress.close()
+
+            if not success:
+                if progress.wasCanceled():
+                    QMessageBox.information(self, "Canceled", "Video processing was canceled.")
+                else:
+                    QMessageBox.warning(self, "Processing Failed", "MediaPipe couldn't process the video in video mode.")
+                return
+
+            self.pose_data = new_pose_data
+
+            self.keypoint_names = []
+            columns = self.pose_data.columns
+            for i in range(0, len(columns), 2):
+                if i + 1 < len(columns):
+                    name = columns[i].replace('_X', '')
+                    self.keypoint_names.append(name)
+
+            self.keypoint_dropdown.blockSignals(True)
+            self.keypoint_dropdown.clear()
+            self.keypoint_dropdown.addItems(self.keypoint_names)
+            self.keypoint_dropdown.blockSignals(False)
+
+            if self.current_frame_idx < len(self.pose_data):
+                self.current_pose = np.array(self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2), copy=True)
+
+            self._needs_redraw = True
+            self.display_frame()
+            self.update_coordinate_inputs()
+            self.update_plot()
+
+            QMessageBox.information(self, "Detection Complete", "Video processed successfully in MediaPipe video mode!")
+
+        except Exception as e:
+            if 'progress' in locals() and progress is not None:
+                progress.close()
+            QMessageBox.critical(self, "Error", f"An error occurred during video mode processing: {str(e)}")
 
     def rotate_video(self):
         """Rotate the video display by 90 degrees clockwise"""
@@ -1630,5 +1788,11 @@ class PoseEditor(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app_font = app.font()
+    if app_font.pointSize() > 0:
+        app_font.setPointSize(app_font.pointSize() + 1)
+    else:
+        app_font.setPointSize(10)
+    app.setFont(app_font)
     window = PoseEditor()
     sys.exit(app.exec_())
