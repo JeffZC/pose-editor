@@ -5,13 +5,13 @@ import numpy as np
 import time
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, 
                            QVBoxLayout, QWidget, QFileDialog, QHBoxLayout, QSlider,
-                           QScrollArea, QGroupBox, QComboBox, QLineEdit, QShortcut)
+                           QScrollArea, QGroupBox, QComboBox, QLineEdit, QShortcut, QDoubleSpinBox, QStyle)
 from PyQt5.QtCore import Qt, QPoint, QSize, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QCursor, QIcon, QKeySequence
 from plot_utils import create_plot_widget, calculate_ankle_angle
 from mediapipe_utils import get_pose_landmarks_from_frame, process_video_with_mediapipe
 from PyQt5.QtWidgets import QProgressDialog, QMessageBox
-from pose_format_utils import load_pose_data, save_pose_data, SUPPORTED_FORMATS, process_mediapipe_to_rr21
+from pose_format_utils import load_pose_data, save_pose_data, SUPPORTED_FORMATS, process_mediapipe_to_rr21, get_keypoint_connections
 
 # Command class for undo/redo operations
 class KeypointCommand:
@@ -100,7 +100,7 @@ class MediaPipeDetectionCommand:
             self.editor.pose_data.iloc[self.frame_idx] = self.old_pose_data
         
         # Update current pose
-        self.editor.current_pose = self.editor.pose_data.iloc[self.frame_idx].values.reshape(-1, 2)
+        self.editor.current_pose = np.array(self.editor.pose_data.iloc[self.frame_idx].values.reshape(-1, 2), copy=True)
         
         # Update UI
         self.editor._needs_redraw = True
@@ -119,7 +119,7 @@ class MediaPipeDetectionCommand:
         self.editor.pose_data.iloc[self.frame_idx] = self.new_pose_data
         
         # Update current pose
-        self.editor.current_pose = self.editor.pose_data.iloc[self.frame_idx].values.reshape(-1, 2)
+        self.editor.current_pose = np.array(self.editor.pose_data.iloc[self.frame_idx].values.reshape(-1, 2), copy=True)
         
         # Update UI
         self.editor._needs_redraw = True
@@ -131,7 +131,20 @@ class PoseEditor(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Pose Editor")
-        self.setGeometry(100, 100, 1024, 768)
+
+        # Open at a comfortable, display-relative size instead of a fixed small window.
+        screen = QApplication.primaryScreen() if QApplication.instance() else None
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = min(max(1280, int(available.width() * 0.80)), 1600)
+            height = min(max(820, int(available.height() * 0.82)), 1000)
+            self.resize(min(width, available.width() - 40), min(height, available.height() - 60))
+            self.move(
+                available.x() + (available.width() - self.width()) // 2,
+                available.y() + (available.height() - self.height()) // 2,
+            )
+        else:
+            self.resize(1280, 820)
 
         # Initialize variables
         self.video_path = None
@@ -166,12 +179,107 @@ class PoseEditor(QMainWindow):
 
         self.gc_counter = 0
 
+        # Pose detection settings (standalone, no GaitDiff dependency)
+        self.pose_model_variant = "heavy"
+        self.pose_confidence_threshold = 0.9
+
         # Initialize caching system properties
         self._cached_frame = None
         self._cached_frame_idx = -1  # Use -1 to ensure it's different from any valid frame idx
         self._needs_redraw = True
 
         self.initUI()
+
+    def _draw_pose_overlay(self, frame):
+        """Draw RR21 skeleton connections and keypoints on a frame."""
+        if self.pose_data is None or self.current_frame_idx >= len(self.pose_data):
+            return frame
+
+        self.current_pose = np.array(self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2), copy=True)
+        connections = get_keypoint_connections("rr21")
+
+        # A small but expressive color palette for regions and sides.
+        colors = {
+            "head": (0, 220, 255),       # warm yellow
+            "torso": (255, 255, 255),    # white
+            "left_arm": (0, 180, 255),   # orange
+            "right_arm": (255, 120, 0),  # blue-orange contrast in BGR
+            "left_leg": (80, 220, 120),  # green
+            "right_leg": (200, 80, 255), # pink-purple
+            "selected": (255, 255, 255), # bright white outline
+        }
+
+        def connection_color(idx1, idx2):
+            pair = {idx1, idx2}
+            if pair <= {0, 1, 2, 3, 4}:
+                return colors["head"]
+            if pair <= {5, 6, 11, 12}:
+                return colors["torso"]
+            if pair <= {5, 7, 9, 11, 13, 15, 17, 19}:
+                return colors["left_arm"] if (5 in pair or 7 in pair or 9 in pair) else colors["left_leg"]
+            if pair <= {6, 8, 10, 12, 14, 16, 18, 20}:
+                return colors["right_arm"] if (6 in pair or 8 in pair or 10 in pair) else colors["right_leg"]
+            if pair & {5, 7, 9}:
+                return colors["left_arm"]
+            if pair & {6, 8, 10}:
+                return colors["right_arm"]
+            if pair & {11, 13, 15, 17, 19}:
+                return colors["left_leg"]
+            if pair & {12, 14, 16, 18, 20}:
+                return colors["right_leg"]
+            return colors["torso"]
+
+        def keypoint_color(index):
+            if index in (0, 1, 2, 3, 4):
+                return colors["head"]
+            if index in (5, 11, 17, 19):
+                return colors["left_arm"]
+            if index in (6, 12, 18, 20):
+                return colors["right_arm"]
+            if index in (7, 9, 13, 15):
+                return colors["left_leg"]
+            if index in (8, 10, 14, 16):
+                return colors["right_leg"]
+            return colors["torso"]
+
+        # Draw bones first so keypoints stay on top.
+        for idx1, idx2 in connections:
+            if idx1 < len(self.current_pose) and idx2 < len(self.current_pose):
+                pt1 = self.current_pose[idx1]
+                pt2 = self.current_pose[idx2]
+                if (pt1[0] > 0 or pt1[1] > 0) and (pt2[0] > 0 or pt2[1] > 0):
+                    cv2.line(
+                        frame,
+                        (int(pt1[0]), int(pt1[1])),
+                        (int(pt2[0]), int(pt2[1])),
+                        connection_color(idx1, idx2),
+                        3,
+                    )
+
+        for i, point in enumerate(self.current_pose):
+            if point[0] == 0 and point[1] == 0:
+                continue
+            x, y = int(point[0]), int(point[1])
+            base_color = keypoint_color(i)
+            radius = 8 if i == self.selected_point else 5
+
+            # Add a subtle outline so the points remain legible on busy backgrounds.
+            cv2.circle(frame, (x, y), radius + 2, (20, 20, 20), -1)
+            cv2.circle(frame, (x, y), radius, base_color, -1)
+
+            if i == self.selected_point:
+                cv2.circle(frame, (x, y), radius + 3, colors["selected"], 2)
+
+        return frame
+
+    def _apply_play_button_icon(self, playing: bool):
+        """Use Qt's built-in media icon, with a text fallback if needed."""
+        icon = self.style().standardIcon(QStyle.SP_MediaPause if playing else QStyle.SP_MediaPlay)
+        self.play_button.setIcon(icon)
+        self.play_button.setText("")
+        self.play_button.setToolTip("Pause playback" if playing else "Play video")
+        if icon.isNull():
+            self.play_button.setText("❚❚" if playing else "▶")
     
     def initUI(self):
         # Create main container with horizontal layout
@@ -217,10 +325,22 @@ class PoseEditor(QMainWindow):
         
         # Add play button (will toggle between play/pause)
         self.play_button = QPushButton()
-        self.play_button.setIcon(QIcon.fromTheme("media-playback-start"))
+        self.play_button.setCursor(Qt.PointingHandCursor)
+        self.play_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #f3f6fa;"
+            "color: #1f2937;"
+            "border: 1px solid #c8d1dc;"
+            "border-radius: 18px;"
+            "padding: 0px;"
+            "font-weight: bold;"
+            "}"
+            "QPushButton:hover { background-color: #e9eef5; border-color: #9caab8; }"
+            "QPushButton:pressed { background-color: #dfe6ee; }"
+        )
+        self._apply_play_button_icon(False)
         self.play_button.setIconSize(QSize(self.play_icon_size, self.play_icon_size))
-        self.play_button.setFixedSize(self.play_button_size, self.play_button_size)
-        self.play_button.setStyleSheet("padding: 0px;")  # Remove padding to maximize icon space
+        self.play_button.setFixedSize(36, 36)
         self.play_button.clicked.connect(self.toggle_playback)
         
         self.prev_frame_button = QPushButton("←")
@@ -361,9 +481,28 @@ class PoseEditor(QMainWindow):
         self.detect_video_button = QPushButton("Run Pose Entire Video")
         self.detect_video_button.clicked.connect(self.detect_pose_video)
 
+        # Add detection settings controls
+        self.pose_settings_layout = QHBoxLayout()
+        self.pose_settings_layout.addWidget(QLabel("Model:"))
+        self.pose_model_dropdown = QComboBox()
+        self.pose_model_dropdown.addItems(["lite", "full", "heavy"])
+        self.pose_model_dropdown.setCurrentText(self.pose_model_variant)
+        self.pose_model_dropdown.currentTextChanged.connect(self._on_pose_model_changed)
+        self.pose_settings_layout.addWidget(self.pose_model_dropdown)
+        self.pose_settings_layout.addWidget(QLabel("Confidence:"))
+        self.confidence_spin = QDoubleSpinBox()
+        self.confidence_spin.setRange(0.0, 1.0)
+        self.confidence_spin.setSingleStep(0.05)
+        self.confidence_spin.setDecimals(2)
+        self.confidence_spin.setValue(self.pose_confidence_threshold)
+        self.confidence_spin.setToolTip("MediaPipe detection confidence threshold")
+        self.confidence_spin.valueChanged.connect(self._on_confidence_change)
+        self.pose_settings_layout.addWidget(self.confidence_spin)
+
         # Add widgets to layout
         self.pose_options_layout.addWidget(self.detect_current_frame_button)
         self.pose_options_layout.addWidget(self.detect_video_button)
+        self.pose_options_layout.addLayout(self.pose_settings_layout)
 
         # Add Save Pose button at the bottom
         self.save_button = QPushButton("Save Poses (to csv)")
@@ -399,12 +538,7 @@ class PoseEditor(QMainWindow):
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
             
-        if self.pose_data is not None:
-            self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
-            for i, point in enumerate(self.current_pose):
-                radius = 8 if i == self.selected_point else 5
-                color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
-                cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+        frame = self._draw_pose_overlay(frame)
         
         # Apply rotation if needed
         if self.rotation_angle > 0:
@@ -578,9 +712,9 @@ class PoseEditor(QMainWindow):
             label_width = int(label_height * aspect_ratio)
             self.label.setFixedSize(label_width, label_height)
             
-            # Update play button to show correct icon
-            self.play_button.setIcon(QIcon.fromTheme("media-playback-start"))
+            # Update play button to show a reliable built-in icon
             self.playing = False
+            self._apply_play_button_icon(False)
             
             # Set smooth stepping for the slider based on total frames
             self.frame_slider.setPageStep(max(1, total_frames // 100))
@@ -790,7 +924,7 @@ class PoseEditor(QMainWindow):
                 # Add keypoints with simplified rendering
                 if self.pose_data is not None:
                     # Update current pose data for this frame
-                    self.current_pose = self.pose_data.iloc[frame_idx].values.reshape(-1, 2)
+                    self.current_pose = np.array(self.pose_data.iloc[frame_idx].values.reshape(-1, 2), copy=True)
                     
                     # Draw simplified keypoints (faster)
                     for i, point in enumerate(self.current_pose):
@@ -1039,8 +1173,7 @@ class PoseEditor(QMainWindow):
     
     def start_playback(self):
         self.playing = True
-        # Use a custom icon or text that clearly indicates the pause state
-        self.play_button.setIcon(QIcon.fromTheme("media-playback-pause"))
+        self._apply_play_button_icon(True)
         
         # Calculate frame interval based on video FPS if available
         if hasattr(self, 'cap') and self.cap:
@@ -1058,8 +1191,7 @@ class PoseEditor(QMainWindow):
 
     def pause_playback(self):
         self.playing = False
-        # Use a custom icon or text that clearly indicates the play state
-        self.play_button.setIcon(QIcon.fromTheme("media-playback-start"))
+        self._apply_play_button_icon(False)
         self.play_timer.stop()
         
         # Re-enable manual frame controls
@@ -1140,6 +1272,17 @@ class PoseEditor(QMainWindow):
             )
             self.add_command(command)
 
+    def _on_pose_model_changed(self, model_variant):
+        """Update pose model variant for subsequent detections."""
+        self.pose_model_variant = (model_variant or "heavy").strip().lower()
+
+    def _on_confidence_change(self, value):
+        """Update pose confidence threshold for subsequent detections."""
+        try:
+            self.pose_confidence_threshold = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            self.pose_confidence_threshold = 0.9
+
     def detect_pose_current_frame(self):
         """Detect pose on the current frame using MediaPipe"""
         if self.current_frame is None:
@@ -1148,14 +1291,18 @@ class PoseEditor(QMainWindow):
         
         try:
             # Process the current frame
-            landmarks_list, annotated_frame = get_pose_landmarks_from_frame(self.current_frame)
+            landmarks_list, annotated_frame = get_pose_landmarks_from_frame(
+                self.current_frame,
+                model_variant=self.pose_model_variant,
+                confidence_threshold=self.pose_confidence_threshold,
+            )
             
             if not landmarks_list:
                 QMessageBox.warning(self, "No Pose Detected", "MediaPipe couldn't detect a pose in this frame.")
                 return
                 
-            # Update the current frame to show annotations
-            self.current_frame = annotated_frame
+            # Keep the raw frame untouched and redraw from pose data only.
+            # This avoids double-drawing when the editor refreshes the image.
             self._needs_redraw = True
             
             # Convert MediaPipe landmarks to RR21 format
@@ -1206,7 +1353,7 @@ class PoseEditor(QMainWindow):
             self.add_command(command)
             
             # Update current pose
-            self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+            self.current_pose = np.array(self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2), copy=True)
             
             # Update display
             self.display_frame()
@@ -1233,7 +1380,12 @@ class PoseEditor(QMainWindow):
             progress.show()
             
             # Process the video
-            new_pose_data, success = process_video_with_mediapipe(self.video_path, progress)
+            new_pose_data, success = process_video_with_mediapipe(
+                self.video_path,
+                progress,
+                model_variant=self.pose_model_variant,
+                confidence_threshold=self.pose_confidence_threshold,
+            )
             
             # Make sure to close the progress dialog when done
             progress.setValue(100)  # Set to 100% to ensure it closes
@@ -1265,7 +1417,7 @@ class PoseEditor(QMainWindow):
             
             # Update current pose
             if self.current_frame_idx < len(self.pose_data):
-                self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+                self.current_pose = np.array(self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2), copy=True)
             
             # Update display
             self._needs_redraw = True  # Force redraw
@@ -1355,7 +1507,7 @@ class PoseEditor(QMainWindow):
                     self.pose_data.iloc[frame_idx, point_idx * 2 + 1] = new_y
             
             # Update current pose
-            self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
+            self.current_pose = np.array(self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2), copy=True)
             
             # Force redraw
             self._needs_redraw = True
@@ -1439,12 +1591,7 @@ class PoseEditor(QMainWindow):
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
                 
             # Draw keypoints on frame
-            if self.pose_data is not None:
-                self.current_pose = self.pose_data.iloc[self.current_frame_idx].values.reshape(-1, 2)
-                for i, point in enumerate(self.current_pose):
-                    radius = 8 if i == self.selected_point else 5
-                    color = (255, 0, 0) if i == self.selected_point else (0, 255, 0)
-                    cv2.circle(frame, (int(point[0]), int(point[1])), radius, color, -1)
+            frame = self._draw_pose_overlay(frame)
             
             # Apply rotation if needed
             if self.rotation_angle > 0:
